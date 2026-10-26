@@ -589,7 +589,12 @@ class App:
         elif op == "nmea":
             self.gps.send_nmea(str(event.get("sentence") or ""))
         elif op == "err":
-            self.set_status(str(event.get("detail") or "Radio error"))
+            detail = str(event.get("detail") or "Radio error")
+            if detail == "nophone":
+                detail = "Set your number, then send again."
+            elif detail == "send":
+                detail = "The Tracker could not send that message."
+            self.set_status(detail)
 
     def on_rx(self, event: dict) -> None:
         sender = int(event["sender"])

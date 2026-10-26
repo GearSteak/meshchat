@@ -1,6 +1,6 @@
 import unittest
 
-from meshchat.link import parse_line
+from meshchat.link import open_link, parse_line
 
 
 class LineTests(unittest.TestCase):
@@ -38,6 +38,32 @@ class LineTests(unittest.TestCase):
         self.assertEqual(parse_line("ID 100001")["phone"], 100001)
         self.assertEqual(parse_line("PONG")["op"], "pong")
         self.assertEqual(parse_line("FW 1")["version"], "1")
+
+    def test_open_does_not_reset_the_tracker(self) -> None:
+        opened = {}
+
+        class Port:
+            def __init__(self) -> None:
+                self.dtr = True
+                self.rts = True
+                self.port = ""
+                self.baudrate = 0
+                self.timeout = None
+
+            def open(self) -> None:
+                opened["dtr"] = self.dtr
+                opened["rts"] = self.rts
+
+        import meshchat.link as link
+
+        original = link.serial.Serial
+        link.serial.Serial = Port
+        try:
+            open_link("COM8")
+        finally:
+            link.serial.Serial = original
+        self.assertFalse(opened["dtr"])
+        self.assertFalse(opened["rts"])
 
 
 if __name__ == "__main__":

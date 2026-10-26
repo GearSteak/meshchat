@@ -15,6 +15,24 @@ TRACKER_PID = 0x1001
 JIGGLER_PID = 0x0002
 
 
+def open_link(port: str) -> serial.Serial:
+    """Open the Tracker without pulsing DTR or RTS.
+
+    Those lines reset the ESP32, so the radio reboots every time Mesh Chat
+    connects and never stays up long enough to send or receive.
+    """
+    link = serial.Serial()
+    link.port = port
+    link.baudrate = 115200
+    link.timeout = 0.2
+    link.dtr = False
+    link.rts = False
+    link.open()
+    link.dtr = False
+    link.rts = False
+    return link
+
+
 def tracker_port(explicit: str | None = None) -> str | None:
     if explicit:
         return explicit
@@ -131,7 +149,7 @@ class Tracker:
                 self._stop.wait(1.0)
                 continue
             try:
-                ser = serial.Serial(name, 115200, timeout=0.2)
+                ser = open_link(name)
             except serial.SerialException as exc:
                 if not announced_down:
                     self.events.put({"op": "down", "detail": str(exc)})
