@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Directions</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; font: 15px/1.4 "Segoe UI", sans-serif; color: #111; background: #f6f6f8; }
+    aside { width: 340px; min-width: 280px; display: flex; flex-direction: column; background: #fff; border-right: 1px solid #e2e2e6; }
+    h1 { font-size: 22px; margin: 16px 16px 4px; }
+    #here { margin: 0 16px 12px; color: #6e6e73; font-size: 13px; }
+    form { display: flex; gap: 8px; margin: 0 16px 10px; }
+    input { flex: 1; border: 1px solid #d0d0d6; border-radius: 10px; padding: 10px 12px; font: inherit; }
+    button { border: 0; border-radius: 10px; background: #0b84ff; color: #fff; font: inherit; font-weight: 600; padding: 8px 12px; cursor: pointer; }
+    button.quiet { background: #e8e8ed; color: #111; }
+    button.on { background: #0b84ff; color: #fff; }
+    .modes { display: flex; gap: 8px; margin: 0 16px 10px; }
+    .modes button { flex: 1; }
+    #results, #steps { list-style: none; margin: 0; padding: 0; overflow: auto; }
+    #results li, #steps li { padding: 10px 16px; border-top: 1px solid #eee; cursor: pointer; }
+    #results li:hover, #steps li.now { background: #e8f2ff; }
+    #summary { margin: 4px 16px 8px; font-weight: 650; }
+    #stage { flex: 1; position: relative; min-width: 0; }
+    #banner {
+      position: absolute; z-index: 500; left: 12px; right: 12px; top: 12px;
+      background: #111; color: #fff; border-radius: 14px; padding: 12px 16px;
+      box-shadow: 0 4px 16px rgba(0,0,0,.2); display: none;
+    }
+    #banner strong { display: block; font-size: 18px; }
+    #map { position: absolute; inset: 0; }
+    .you {
+      width: 18px; height: 18px; border-radius: 50%; background: #0b84ff;
+      border: 3px solid #fff; box-shadow: 0 0 0 2px #0b84ff;
+    }
+  </style>
+</head>
+<body>
+  <aside>
+    <h1>Directions</h1>
+    <div id="here">Waiting for the Tracker GPS…</div>
+    <form id="find">
+      <input id="q" placeholder="Where to?" autocomplete="off">
+      <button type="submit">Search</button>
+    </form>
+    <div class="modes">
+      <button type="button" id="drive" class="on">Drive</button>
+      <button type="button" id="walk" class="quiet">Walk</button>
+    </div>
+    <ul id="results"></ul>
+    <div id="summary"></div>
+    <ol id="steps"></ol>
+  </aside>
+  <div id="stage">
+    <div id="banner"></div>
+    <div id="map"></div>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const map = L.map("map", { zoomControl: true }).setView([20, 0], 2);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(map);
+    const youIcon = L.divIcon({ className: "", html: '<div class="you"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
+    let you = null;
+    let pin = null;
+    let line = null;
+    let fix = { fix: 0 };
+    let destination = null;
+    let mode = "driving";
+    let steps = [];
+    let followed = true;
+    let routing = false;
+    let routedFrom = null;
+    let lastRouteAt = 0;
+
+    function meters(n) {
+      if (n < 950) return Math.max(1, Math.round(n / 10) * 10) + " m";
+      return (n / 1000).toFixed(n < 10000 ? 1 : 0) + " km";
+    }
+    function duration(seconds) {
+      const minutes = Math.max(1, Math.round(seconds / 60));
+      if (minutes < 60) return minutes + " min";
+      const hours = Math.floor(minutes / 60);
+      return hours + " h " + (minutes % 60) + " min";
+    }
+    function haversine(a, b) {
+      const r = 6371000;
+      const dLat = (b.lat - a.lat) * Math.PI / 180;
+      const dLon = (b.lon - a.lon) * Math.PI / 180;
+      const s = Math.sin(dLat / 2) ** 2 +
+        Math.cos(a.lat * Math.PI / 180) * Math.cos(b.lat * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+      return 2 * r * Math.asin(Math.min(1, Math.sqrt(s)));
+    }
+
+    async function tick() {
+      try {
+        fix = await (await fetch("/pos")).json();
+      } catch (err) {
+        document.getElementById("here").textContent = "Directions lost the chat app. Open it again from Mesh Chat.";
+        return;
+      }
+      const here = document.getElementById("here");
+      if (!fix.fix) {
+        here.textContent = fix.sats ? "Searching the sky, " + fix.sats + " satellites" : "Waiting for the Tracker GPS…";
+        return;
+      }
+      here.textContent = fix.lat.toFixed(5) + ", " + fix.lon.toFixed(5) + "  ·  " + Math.round(fix.alt) + " m";
+      const point = [fix.lat, fix.lon];
+      if (!you) {
+        you = L.marker(point, { icon: youIcon, zIndexOffset: 500 }).addTo(map);
+        if (!destination) map.setView(point, 15);
+      } else {
+        you.setLatLng(point);
+        if (followed && !destination) map.panTo(point);
+      }
+      showBanner();
+      maybeReroute();
+    }
+
+    function setDestination(lat, lon, name) {
+      destination = { lat, lon, name };
+      if (!pin) pin = L.marker([lat, lon]).addTo(map);
+      else pin.setLatLng([lat, lon]);
+      pin.bindPopup(name).openPopup();
+      document.getElementById("results").innerHTML = "";
+      followed = false;
+      map.fitBounds(L.latLngBounds([fix.fix ? [fix.lat, fix.lon] : [lat, lon], [lat, lon]]).pad(0.3));
+      routeNow();
+    }
+
+    async function routeNow() {
+      if (!destination) return;
+      if (!fix.fix) {
+        document.getElementById("summary").textContent = "A GPS fix is needed before directions can start.";
+        return;
+      }
+      if (routing) return;
+      routing = true;
+      const summary = document.getElementById("summary");
+      summary.textContent = "Finding a route…";
+      const url = "/route?flat=" + fix.lat + "&flon=" + fix.lon +
+        "&tlat=" + destination.lat + "&tlon=" + destination.lon + "&mode=" + mode;
+      try {
+        const result = await (await fetch(url)).json();
+        if (result.error) {
+          summary.textContent = result.error;
+          steps = [];
+          drawSteps();
+          return;
+        }
+        steps = result.steps || [];
+        summary.textContent = duration(result.duration) + "  ·  " + meters(result.distance) +
+          (mode === "foot" ? " walking" : " driving");
+        if (line) map.removeLayer(line);
+        line = L.polyline(result.line, { color: "#0b84ff", weight: 6, opacity: 0.9 }).addTo(map);
+        routedFrom = { lat: fix.lat, lon: fix.lon };
+        lastRouteAt = Date.now();
+        drawSteps();
+        showBanner();
+      } catch (err) {
+        summary.textContent = "Directions need a network connection.";
+      } finally {
+        routing = false;
+      }
+    }
+
+    function maybeReroute() {
+      if (!destination || !fix.fix || !routedFrom) return;
+      const moved = haversine(fix, routedFrom);
+      if (moved < 40 || Date.now() - lastRouteAt < 15000) return;
+      routeNow();
+    }
+
+    function upcoming() {
+      let index = 0;
+      for (let i = 0; i < steps.length - 1; i++) {
+        if (steps[i].lat == null) continue;
+        if (haversine(fix, steps[i]) < 40) index = i + 1;
+      }
+      return index;
+    }
+
+    function drawSteps() {
+      const list = document.getElementById("steps");
+      const current = fix.fix ? upcoming() : 0;
+      list.innerHTML = "";
+      steps.forEach((step, index) => {
+        const item = document.createElement("li");
+        item.textContent = step.text + "  ·  " + meters(step.distance);
+        if (index === current) item.className = "now";
+        list.appendChild(item);
+      });
+    }
+
+    function showBanner() {
+      const banner = document.getElementById("banner");
+      if (!steps.length || !fix.fix) {
+        banner.style.display = "none";
+        return;
+      }
+      const step = steps[upcoming()];
+      banner.style.display = "block";
+      banner.innerHTML = "<span>" + meters(step.distance) + "</span><strong>" + step.text + "</strong>";
+    }
+
+    document.getElementById("find").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const q = document.getElementById("q").value.trim();
+      if (q.length < 2) return;
+      const list = document.getElementById("results");
+      list.innerHTML = "<li>Searching…</li>";
+      const result = await (await fetch("/search?q=" + encodeURIComponent(q))).json();
+      list.innerHTML = "";
+      if (result.error) {
+        list.innerHTML = "<li>" + result.error + "</li>";
+        return;
+      }
+      if (!result.places.length) {
+        list.innerHTML = "<li>No places found.</li>";
+        return;
+      }
+      result.places.forEach((place) => {
+        const item = document.createElement("li");
+        item.textContent = place.name;
+        item.addEventListener("click", () => setDestination(place.lat, place.lon, place.name));
+        list.appendChild(item);
+      });
+    });
+
+    function chooseMode(next) {
+      mode = next;
+      document.getElementById("drive").className = next === "driving" ? "on" : "quiet";
+      document.getElementById("walk").className = next === "foot" ? "on" : "quiet";
+      routedFrom = null;
+      routeNow();
+    }
+    document.getElementById("drive").addEventListener("click", () => chooseMode("driving"));
+    document.getElementById("walk").addEventListener("click", () => chooseMode("foot"));
+    map.on("click", (event) => setDestination(event.latlng.lat, event.latlng.lng, "Dropped pin"));
+    map.on("dragstart", () => { followed = false; });
+    setInterval(tick, 2000);
+    tick();
+  </script>
+</body>
+</html>
