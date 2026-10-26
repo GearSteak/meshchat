@@ -104,37 +104,63 @@ def apply_archive(root: Path, blob: bytes, sha: str) -> None:
     (root / REVISION_NAME).write_text(sha + "\n", encoding="utf-8")
 
 
+def porcelain_paths(text: str) -> set[str]:
+    paths: set[str] = set()
+    for line in text.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:].strip().strip('"').replace("\\", "/")
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if path:
+            paths.add(path)
+    return paths
+
+
+def select_updates(rows: list[tuple[str, str]], kept: set[str]) -> tuple[list[str], list[str]]:
+    take: list[str] = []
+    remove: list[str] = []
+    for kind, path in rows:
+        if path in kept:
+            continue
+        if kind == "D":
+            remove.append(path)
+        elif kind in {"A", "M", "T"}:
+            take.append(path)
+    return take, remove
+
+
+def parse_name_status(text: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        kind = parts[0]
+        if kind[:1] in {"R", "C"} and len(parts) >= 3:
+            rows.append(("D", parts[1].replace("\\", "/")))
+            rows.append(("A", parts[2].replace("\\", "/")))
+            continue
+        if len(parts) >= 2:
+            rows.append((kind[:1], parts[1].replace("\\", "/")))
+    return rows
+
+
 def install_update(
     root: Path,
     sha: str,
     blob: bytes | None = None,
     opener=urllib.request.urlopen,
     on_status=None,
-) -> None:
+) -> list[str]:
     def report(text: str) -> None:
         if on_status is not None:
             on_status(text)
 
+    kept: list[str] = []
     if (root / ".git").is_dir() and shutil.which("git"):
         report("Downloading")
-        env = os.environ.copy()
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        try:
-            result = subprocess.run(
-                ["git", "pull", "--ff-only", "origin", BRANCH],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                timeout=90,
-                env=env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Downloading the update took too long.") from exc
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "git pull failed").strip()
-            raise RuntimeError(detail)
+        kept = _update_git(root)
     else:
         report("Downloading")
         apply_archive(root, blob if blob is not None else download_archive(opener), sha)
@@ -154,6 +180,58 @@ def install_update(
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("Installing the update packages took too long.") from exc
+    return kept
+
+
+def _git(root: Path, args: list[str], timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Downloading the update took too long.") from exc
+
+
+def _update_git(root: Path) -> list[str]:
+    status = _git(root, ["status", "--porcelain", "-uall"])
+    if status.returncode != 0:
+        detail = (status.stderr or status.stdout or "git status failed").strip()
+        raise RuntimeError(detail)
+    kept = porcelain_paths(status.stdout)
+    fetched = _git(root, ["fetch", "origin", BRANCH], timeout=90)
+    if fetched.returncode != 0:
+        detail = (fetched.stderr or fetched.stdout or "Could not download the update.").strip()
+        raise RuntimeError(detail)
+    compared = _git(root, ["diff", "--name-status", "HEAD", f"origin/{BRANCH}"])
+    if compared.returncode != 0:
+        detail = (compared.stderr or compared.stdout or "Could not compare the update.").strip()
+        raise RuntimeError(detail)
+    rows = parse_name_status(compared.stdout)
+    take, remove = select_updates(rows, kept)
+    for start in range(0, len(take), 40):
+        result = _git(root, ["checkout", f"origin/{BRANCH}", "--", *take[start : start + 40]])
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "Could not apply the update.").strip()
+            raise RuntimeError(detail)
+    for path in remove:
+        file = root / path
+        if file.is_file():
+            file.unlink()
+    moved = _git(root, ["reset", "--mixed", f"origin/{BRANCH}"])
+    if moved.returncode != 0:
+        detail = (moved.stderr or moved.stdout or "Could not finish the update.").strip()
+        raise RuntimeError(detail)
+    incoming = {path for _kind, path in rows}
+    return sorted(path for path in kept if path in incoming)
 
 
 def _missing_packages() -> bool:

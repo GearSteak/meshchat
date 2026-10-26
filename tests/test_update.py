@@ -3,7 +3,15 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from meshchat.update import UpdateStatus, apply_archive, local_revision, remote_revision
+from meshchat.update import (
+    UpdateStatus,
+    apply_archive,
+    local_revision,
+    parse_name_status,
+    porcelain_paths,
+    remote_revision,
+    select_updates,
+)
 
 
 class _Body:
@@ -27,6 +35,15 @@ class UpdateTests(unittest.TestCase):
             return _Body(b'{"sha":"abc1234"}')
 
         self.assertEqual(remote_revision(opener), "abc1234")
+
+    def test_local_files_are_not_replaced(self) -> None:
+        kept = porcelain_paths(" M meshchat/app.py\n?? notes/mine.txt\nR  old.py -> meshchat/link.py\n")
+        self.assertEqual(kept, {"meshchat/app.py", "notes/mine.txt", "meshchat/link.py"})
+        rows = parse_name_status("M\tmeshchat/app.py\nM\tmeshchat/update.py\nD\tmeshchat/old.py\n")
+        take, remove = select_updates(rows, kept)
+        self.assertEqual(take, ["meshchat/update.py"])
+        self.assertEqual(remove, ["meshchat/old.py"])
+        self.assertNotIn("meshchat/app.py", take)
 
     def test_status_is_available_when_the_commit_differs(self) -> None:
         same = UpdateStatus(local="abc", remote="abc")
