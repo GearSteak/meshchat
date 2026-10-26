@@ -119,31 +119,35 @@ def _ensure_esptool() -> None:
         [sys.executable, "-m", "esptool", "version"],
         capture_output=True,
         text=True,
-        timeout=30,
+        stdin=subprocess.DEVNULL,
+        timeout=20,
         check=False,
     )
     if probe.returncode == 0:
         return
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "esptool==4.8.1"],
+        [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "esptool==4.8.1"],
+        stdin=subprocess.DEVNULL,
+        timeout=180,
         check=False,
     )
 
 
 def _wait_for_bootloader() -> str:
-    deadline = time.time() + 20
+    deadline = time.time() + 25
     while time.time() < deadline:
         for port in tracker_port_names():
             if _bootloader_answers(port):
                 return port
-        time.sleep(0.5)
+        time.sleep(0.4)
     raise RuntimeError(
         "The Tracker did not enter firmware update mode. Unplug it, plug it back in, and press Update again."
     )
 
 
 def _bootloader_answers(port: str) -> bool:
-    result = _run(
+    try:
+        result = _run(
         [
             sys.executable,
             "-m",
@@ -159,17 +163,31 @@ def _bootloader_answers(port: str) -> bool:
             "--after",
             "no_reset",
             "--connect-attempts",
-            "2",
+            "1",
             "chip_id",
         ],
         check=False,
+        timeout=8,
     )
+    except RuntimeError:
+        return False
     return result.returncode == 0
 
 
-def _run(command: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run(
+    command: list[str],
+    check: bool = True,
+    timeout: int = 90,
+) -> subprocess.CompletedProcess[str]:
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=180, check=False)
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("Flashing the Tracker took too long.") from exc
     if check and result.returncode != 0:

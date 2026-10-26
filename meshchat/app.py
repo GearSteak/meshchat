@@ -61,6 +61,7 @@ class App:
         self.root.geometry("980x700")
         self.root.minsize(760, 520)
         self._thread_width = 0
+        self._jobs: queue.Queue = queue.Queue()
         self._contact_rows: dict[int, tk.Frame] = {}
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -542,6 +543,12 @@ class App:
             except queue.Empty:
                 break
             self.on_event(event)
+        while True:
+            try:
+                job = self._jobs.get_nowait()
+            except queue.Empty:
+                break
+            job()
         if self.root.winfo_exists():
             self.root.after(100, self.poll)
 
@@ -627,9 +634,9 @@ class App:
         try:
             status = check_update(install_root())
         except Exception as exc:
-            self.root.after(0, lambda: self._update_failed(str(exc)))
+            self._jobs.put(lambda detail=str(exc): self._update_failed(detail))
             return
-        self.root.after(0, lambda: self._offer_update(status))
+        self._jobs.put(lambda: self._offer_update(status))
 
     def _restore_update_button(self) -> None:
         self.update_btn.configure(state="normal", text="Update")
@@ -663,23 +670,29 @@ class App:
         if not messagebox.askyesno("Update", question, parent=self.root):
             self._restore_update_button()
             return
-        self.update_btn.configure(text="Installing")
+        self.update_btn.configure(text="Downloading")
         threading.Thread(
             target=self._install_update,
             args=(status.remote if refresh_app else "", flash),
             daemon=True,
         ).start()
 
+    def _install_status(self, text: str) -> None:
+        self._jobs.put(lambda: self.update_btn.configure(text=text))
+
     def _install_update(self, sha: str, flash: bool) -> None:
         self.tracker.stop()
         try:
             if sha:
-                install_update(install_root(), sha)
-            note = update_tracker(install_root()) if flash else ""
+                install_update(install_root(), sha, on_status=self._install_status)
+            note = ""
+            if flash:
+                self._install_status("Updating Tracker")
+                note = update_tracker(install_root())
         except Exception as exc:
-            self.root.after(0, lambda: self._update_failed(str(exc)))
+            self._jobs.put(lambda detail=str(exc): self._update_failed(detail))
             return
-        self.root.after(0, lambda: self._finish_update(note))
+        self._jobs.put(lambda: self._finish_update(note))
 
     def _finish_update(self, note: str) -> None:
         if note:

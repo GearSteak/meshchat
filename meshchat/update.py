@@ -104,27 +104,65 @@ def apply_archive(root: Path, blob: bytes, sha: str) -> None:
     (root / REVISION_NAME).write_text(sha + "\n", encoding="utf-8")
 
 
-def install_update(root: Path, sha: str, blob: bytes | None = None, opener=urllib.request.urlopen) -> None:
+def install_update(
+    root: Path,
+    sha: str,
+    blob: bytes | None = None,
+    opener=urllib.request.urlopen,
+    on_status=None,
+) -> None:
+    def report(text: str) -> None:
+        if on_status is not None:
+            on_status(text)
+
     if (root / ".git").is_dir() and shutil.which("git"):
-        result = subprocess.run(
-            ["git", "pull", "--ff-only", "origin", BRANCH],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        report("Downloading")
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        try:
+            result = subprocess.run(
+                ["git", "pull", "--ff-only", "origin", BRANCH],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                timeout=90,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Downloading the update took too long.") from exc
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "git pull failed").strip()
             raise RuntimeError(detail)
     else:
+        report("Downloading")
         apply_archive(root, blob if blob is not None else download_archive(opener), sha)
     requirements = root / "requirements.txt"
-    if requirements.is_file():
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-r", str(requirements)],
-            cwd=root,
-            check=False,
-        )
+    if requirements.is_file() and _missing_packages():
+        report("Installing packages")
+        env = os.environ.copy()
+        env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "-r", str(requirements)],
+                cwd=root,
+                stdin=subprocess.DEVNULL,
+                timeout=180,
+                check=False,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Installing the update packages took too long.") from exc
+
+
+def _missing_packages() -> bool:
+    try:
+        import esptool  # noqa: F401
+        import serial  # noqa: F401
+    except ImportError:
+        return True
+    return False
 
 
 def relaunch() -> None:
