@@ -282,9 +282,23 @@ static bool transmit(const uint8_t *data, size_t len) {
     }
     paTransmit();
     delay(2);
-    int state = radio->transmit(data, len);
+    int state = radio->startTransmit(data, len);
+    if (state != RADIOLIB_ERR_NONE) {
+        listen();
+        return false;
+    }
+    uint32_t started = millis();
+    bool done = false;
+    while (millis() - started < 20000) {
+        if ((radio->getIrqFlags() & RADIOLIB_SX126X_IRQ_TX_DONE) != 0) {
+            done = true;
+            break;
+        }
+        delay(5);
+    }
+    state = radio->finishTransmit();
     listen();
-    return state == RADIOLIB_ERR_NONE;
+    return done && state == RADIOLIB_ERR_NONE;
 }
 
 static bool sendMessage(uint32_t target, uint32_t messageId, const char *text) {

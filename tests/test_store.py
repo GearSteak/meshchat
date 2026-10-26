@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from meshchat.app import parse_phone, show_incoming
+from meshchat.app import format_phone, parse_phone, show_incoming
 from meshchat.protocol import BROADCAST
 from meshchat.store import Store
 
@@ -61,7 +61,7 @@ class StoreTests(unittest.TestCase):
             app.open_chat(166800)
             app.root.update()
             self.assertEqual(app.current, 166800)
-            self.assertEqual(app.title.cget("text"), "166800")
+            self.assertEqual(app.title.cget("text"), "0x00028B90")
             app.entry.insert("end", "hello")
             app.send()
             app.root.update()
@@ -77,11 +77,20 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(show_incoming(100001, 166800, 100001))
 
     def test_phone_parser(self) -> None:
-        self.assertEqual(parse_phone("100001"), 100001)
+        self.assertEqual(parse_phone("0x00028B90"), 166800)
+        self.assertEqual(parse_phone("00028B90"), 166800)
+        self.assertEqual(parse_phone("166800"), 166800)
+        self.assertEqual(format_phone(166800), "0x00028B90")
         with self.assertRaises(ValueError):
-            parse_phone("12ab")
+            parse_phone("0x")
         with self.assertRaises(ValueError):
-            parse_phone("4294967295")
+            parse_phone("0xFFFFFFFF")
+
+    def test_a_real_send_clears_not_sent(self) -> None:
+        self.store.add_message(100002, 100001, 100002, "hi", "sending")
+        self.store.fail_sending()
+        self.store.mark_tx(100002, 50, True)
+        self.assertEqual(self.store.messages(100002)[0].status, "sent")
 
 
 if __name__ == "__main__":

@@ -202,6 +202,12 @@ class Store:
             "ORDER BY id LIMIT 1",
             (peer,),
         ).fetchone()
+        if row is None and ok:
+            row = self.db.execute(
+                "SELECT id FROM messages WHERE peer = ? AND status = 'failed' "
+                "ORDER BY id DESC LIMIT 1",
+                (peer,),
+            ).fetchone()
         if row is None:
             return
         self.db.execute(

@@ -44,11 +44,25 @@ def show_incoming(sender: int, target: int, me: int | None) -> bool:
     return True
 
 
+def format_phone(number: int) -> str:
+    """8-digit hex id, the form the phone asks for when adding a contact."""
+    return f"0x{number:08X}"
+
+
+def shown_name(name: str, phone: int) -> str:
+    if phone == BROADCAST:
+        return name
+    if name == str(phone):
+        return format_phone(phone)
+    return name
+
+
 def parse_phone(raw: str) -> int:
-    text = raw.strip()
-    if not text.isdigit():
-        raise ValueError("Use digits only, the number from the radio's About screen.")
-    number = int(text)
+    text = raw.strip().replace(" ", "")
+    hex_body = text[2:] if text.lower().startswith("0x") else text
+    if not hex_body or any(c not in "0123456789abcdefABCDEF" for c in hex_body):
+        raise ValueError("Use the hex id, like 0x00028B90.")
+    number = int(hex_body, 16) if text.lower().startswith("0x") or any(c in "abcdefABCDEF" for c in hex_body) else int(hex_body)
     if number == 0 or number > BROADCAST:
         raise ValueError("That number does not fit in the radio's id.")
     if number == BROADCAST:
@@ -275,7 +289,7 @@ class App:
         if phone is None:
             self.number_btn.configure(text="Set my number")
         else:
-            self.number_btn.configure(text=f"My number  {phone}")
+            self.number_btn.configure(text=f"My number  {format_phone(phone)}")
 
     def refresh_contacts(self, keep: int | None = None) -> None:
         if keep is None:
@@ -296,16 +310,17 @@ class App:
         row = tk.Frame(self.contact_inner, bg=bg, cursor="hand2")
         row.pack(fill="x")
         self._contact_rows[phone] = row
-        color = "#34c759" if phone == BROADCAST else avatar_color(name)
-        letter = "All" if phone == BROADCAST else name[:1].upper()
+        label = shown_name(name, phone)
+        color = "#34c759" if phone == BROADCAST else avatar_color(label)
+        letter = "All" if phone == BROADCAST else (label[-1] if label.startswith("0x") else label[:1].upper())
         bubble = tk.Canvas(row, width=52, height=52, bg=bg, highlightthickness=0, bd=0)
         bubble.pack(side="left", padx=(12, 4), pady=6)
         bubble.create_oval(8, 8, 44, 44, fill=color, outline="")
         bubble.create_text(26, 26, text=letter, fill="white", font=ui_font(12, True))
         words = tk.Frame(row, bg=bg)
         words.pack(side="left", fill="x", expand=True, pady=8)
-        tk.Label(words, text=name, bg=bg, fg=INK, font=ui_font(12, True), anchor="w").pack(fill="x")
-        detail = "Everyone" if phone == BROADCAST else str(phone)
+        tk.Label(words, text=label, bg=bg, fg=INK, font=ui_font(12, True), anchor="w").pack(fill="x")
+        detail = "Everyone" if phone == BROADCAST else format_phone(phone)
         tk.Label(words, text=detail, bg=bg, fg=MUTED, font=ui_font(10), anchor="w").pack(fill="x")
         tk.Frame(self.contact_inner, bg=LINE, height=1).pack(fill="x", padx=16)
 
@@ -328,16 +343,16 @@ class App:
             self.title.configure(text="Messages")
             self.subtitle.configure(text="")
             return
-        name = self.store.contact_name(phone)
+        name = shown_name(self.store.contact_name(phone), phone)
         color = "#34c759" if phone == BROADCAST else avatar_color(name)
-        letter = "All" if phone == BROADCAST else name[:1].upper()
+        letter = "All" if phone == BROADCAST else (name[-1] if name.startswith("0x") else name[:1].upper())
         self.avatar.create_oval(1, 1, 41, 41, fill=color, outline="")
         self.avatar.create_text(21, 21, text=letter, fill="white", font=ui_font(13, True))
         self.title.configure(text=name)
         if phone == BROADCAST:
             self.subtitle.configure(text="Heard by every radio")
         else:
-            self.subtitle.configure(text=str(phone))
+            self.subtitle.configure(text=format_phone(phone))
 
     def show_thread(self) -> None:
         canvas = self.thread
@@ -355,7 +370,7 @@ class App:
             if phone == BROADCAST:
                 empty = "No messages yet.\nNew chat opens one radio. Typing here reaches every radio."
             else:
-                empty = f"No messages with {self.store.contact_name(phone)} yet.\nType below and press Send."
+                empty = f"No messages with {shown_name(self.store.contact_name(phone), phone)} yet.\nType below and press Send."
             canvas.create_text(
                 width / 2,
                 90,
@@ -376,7 +391,7 @@ class App:
             mine = me is not None and message.sender == me
             who = ""
             if phone == BROADCAST and not mine:
-                who = self.store.contact_name(message.sender)
+                who = shown_name(self.store.contact_name(message.sender), message.sender)
             lines = wrap_lines(message.body, body_font, max_text)
             line_h = body_font.metrics("linespace")
             text_w = max(body_font.measure(line) for line in lines)
@@ -417,8 +432,8 @@ class App:
         current = self.store.phone()
         raw = simpledialog.askstring(
             "My number",
-            "This Pi's number. Put this same number into the other radios as a contact.",
-            initialvalue="" if current is None else str(current),
+            "Hex id for this Pi. When the phone says enter hex, type this id.",
+            initialvalue="" if current is None else format_phone(current),
             parent=self.root,
         )
         if raw is None:
@@ -437,7 +452,7 @@ class App:
     def new_chat(self) -> None:
         raw = simpledialog.askstring(
             "New chat",
-            "Number from the other radio's About screen.",
+            "Hex id from the other radio, like 0x00028B90.",
             parent=self.root,
         )
         if raw is None:
@@ -448,7 +463,7 @@ class App:
             messagebox.showerror("New chat", str(exc), parent=self.root)
             return
         if phone == self.store.phone():
-            messagebox.showerror("New chat", "That is this Pi's own number.", parent=self.root)
+            messagebox.showerror("New chat", "That is this Pi's own hex id.", parent=self.root)
             return
         self.open_chat(phone)
 
@@ -564,9 +579,6 @@ class App:
                 job()
             except Exception:
                 self.set_status("Mesh Chat skipped a bad radio update.")
-        if self.store.fail_sending(12):
-            self.show_thread()
-            self.set_status("The Tracker did not finish sending. The message stayed here as not sent.")
         if self.root.winfo_exists():
             self.root.after(100, self.poll)
 
@@ -594,7 +606,7 @@ class App:
                 if self._id_fix != wanted:
                     self._id_fix = wanted
                     self.tracker.set_phone(wanted)
-                    self.set_status(f"Telling the Tracker this Pi's number is {wanted}")
+                    self.set_status(f"Telling the Tracker this Pi's id is {format_phone(wanted)}")
                 return
             self._id_fix = None
             if phone and self.store.phone() != phone:
@@ -636,7 +648,7 @@ class App:
         self.store.add_message(peer, sender, target, event["text"], "received", int(event["id"]))
         self.refresh_contacts(peer)
         self.show_thread()
-        self.set_status(f"Message from {sender}")
+        self.set_status(f"Message from {format_phone(sender)}")
 
     def on_gps(self, event: dict) -> None:
         fix = int(event.get("fix") or 0)
