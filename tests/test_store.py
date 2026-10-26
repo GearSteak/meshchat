@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from meshchat.app import parse_phone
+from meshchat.app import parse_phone, show_incoming
 from meshchat.protocol import BROADCAST
 from meshchat.store import Store
 
@@ -69,6 +69,12 @@ class StoreTests(unittest.TestCase):
             self.assertEqual(self.store.contact_name(166800), "166800")
         finally:
             app.close()
+
+    def test_incoming_is_shown_when_the_number_matches_the_other_radio(self) -> None:
+        self.assertTrue(show_incoming(166800, 166800, 166800))
+        self.assertTrue(show_incoming(166800, 0xFFFFFFFF, 100001))
+        self.assertTrue(show_incoming(166800, 100001, 100001))
+        self.assertFalse(show_incoming(100001, 166800, 100001))
 
     def test_phone_parser(self) -> None:
         self.assertEqual(parse_phone("100001"), 100001)

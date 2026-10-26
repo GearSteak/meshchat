@@ -335,11 +335,8 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
     uint32_t target = ((uint32_t)packet[4] << 24) | ((uint32_t)packet[5] << 16) |
                       ((uint32_t)packet[6] << 8) | packet[7];
     uint8_t kind = packet[8];
-    if (sender == phone) {
-        return;
-    }
     if (kind == kTypeDelivered) {
-        if (target == phone) {
+        if (target == phone && sender != phone) {
             Serial.printf("ACK %lu\n", (unsigned long)sender);
             blink();
         }
@@ -348,9 +345,8 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
     if (kind != kTypeMessage || packetLen < 15) {
         return;
     }
-    if (target != phone && target != kBroadcast) {
-        return;
-    }
+    // The number we send as is not a reason to hide a packet. Replies often
+    // arrive addressed to a different number than the one saved here.
     uint32_t messageId = ((uint32_t)packet[9] << 24) | ((uint32_t)packet[10] << 16) |
                          ((uint32_t)packet[11] << 8) | packet[12];
     uint16_t textLen = ((uint16_t)packet[13] << 8) | packet[14];

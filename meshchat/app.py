@@ -37,6 +37,13 @@ def ui_font(size: int, bold: bool = False) -> tuple:
     return (family, size, "bold" if bold else "normal")
 
 
+def show_incoming(sender: int, target: int, me: int | None) -> bool:
+    """Hide only our own outgoing packet. A matching number can still be the other radio."""
+    if me is not None and sender == me and target not in (me, BROADCAST):
+        return False
+    return True
+
+
 def parse_phone(raw: str) -> int:
     text = raw.strip()
     if not text.isdigit():
@@ -63,6 +70,7 @@ class App:
         self._thread_width = 0
         self._jobs: queue.Queue = queue.Queue()
         self._contact_rows: dict[int, tk.Frame] = {}
+        self._id_fix: int | None = None
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._build()
@@ -421,6 +429,7 @@ class App:
             messagebox.showerror("My number", str(exc), parent=self.root)
             return
         self.store.set_phone(phone)
+        self._id_fix = None
         self.tracker.set_phone(phone)
         self._paint_number()
         self.show_thread()
@@ -574,7 +583,15 @@ class App:
                 self.set_status(f"Radio failed to start ({event.get('detail')})")
         elif op == "id":
             phone = int(event["phone"])
-            if phone and self.store.phone() is None:
+            wanted = self.tracker.wanted_phone
+            if wanted and phone != wanted:
+                if self._id_fix != wanted:
+                    self._id_fix = wanted
+                    self.tracker.set_phone(wanted)
+                    self.set_status(f"Telling the Tracker this Pi's number is {wanted}")
+                return
+            self._id_fix = None
+            if phone and self.store.phone() != phone:
                 self.store.set_phone(phone)
                 self.tracker.wanted_phone = phone
                 self._paint_number()
@@ -606,10 +623,7 @@ class App:
     def on_rx(self, event: dict) -> None:
         sender = int(event["sender"])
         target = int(event["target"])
-        me = self.store.phone()
-        if me is not None and sender == me:
-            return
-        if me is not None and target != BROADCAST and target != me:
+        if not show_incoming(sender, target, self.store.phone()):
             return
         peer = BROADCAST if target == BROADCAST else sender
         self.store.ensure_contact(sender)
