@@ -191,7 +191,10 @@ def _missing_packages() -> bool:
 def relaunch() -> None:
     root = install_root()
     os.chdir(root)
-    os.execv(sys.executable, [sys.executable, "-m", "meshchat"])
+    env = os.environ.copy()
+    previous = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(root) if not previous else str(root) + os.pathsep + previous
+    os.execve(sys.executable, [sys.executable, "-m", "meshchat"], env)
 
 
 def _skip(relative: str) -> bool:

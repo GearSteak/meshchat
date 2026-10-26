@@ -15,7 +15,7 @@ from meshchat.gps_share import GpsShare
 from meshchat.link import Tracker, tracker_port
 from meshchat.protocol import BROADCAST, MAX_TEXT
 from meshchat.store import Store, data_dir
-from meshchat.update import check_update, install_root, install_update, relaunch
+from meshchat.update import check_update, install_root, install_update, local_revision, relaunch
 
 BG = "#e8e8ed"
 PANEL = "#f7f7f8"
@@ -30,6 +30,13 @@ ACCENT = "#248a3d"
 SELECT = "#d6e8ff"
 LINE = "#d1d1d6"
 CHAT = "#ffffff"
+
+
+def running_revision() -> str:
+    sha = local_revision(install_root())
+    if not sha:
+        return "local"
+    return sha[:7]
 
 
 def ui_font(size: int, bold: bool = False) -> tuple:
@@ -78,7 +85,7 @@ class App:
         self.phones: list[int] = []
         self.current: int | None = None
         self.root = tk.Tk()
-        self.root.title("Messages")
+        self.root.title(f"Mesh Chat {running_revision()}")
         self.root.geometry("980x700")
         self.root.minsize(760, 520)
         self._thread_width = 0
@@ -96,7 +103,10 @@ class App:
     def _build(self) -> None:
         header = tk.Frame(self.root, bg=FIELD, padx=16, pady=12)
         header.pack(fill="x")
-        tk.Label(header, text="Messages", bg=FIELD, fg=INK, font=ui_font(20, True)).pack(side="left")
+        tk.Label(header, text="Mesh Chat", bg=FIELD, fg=INK, font=ui_font(20, True)).pack(side="left")
+        tk.Label(header, text=running_revision(), bg=FIELD, fg=MUTED, font=ui_font(10)).pack(
+            side="left", padx=(8, 0)
+        )
         self.number_btn = tk.Button(
             header,
             text="Set my number",
@@ -707,7 +717,10 @@ class App:
         if refresh_app and flash:
             question = "Install the latest Mesh Chat and update the Tracker?"
         elif flash:
-            question = "Update the Tracker firmware? The Tracker will restart."
+            question = (
+                "Mesh Chat is already the latest copy. "
+                "Update the Tracker firmware? The Tracker will restart."
+            )
         else:
             question = (
                 "A newer Mesh Chat is on GitHub. Install it and restart? "
@@ -738,11 +751,14 @@ class App:
         except Exception as exc:
             self._jobs.put(lambda detail=str(exc): self._update_failed(detail))
             return
-        self._jobs.put(lambda: self._finish_update(note))
+        self._jobs.put(lambda note=note, updated=bool(sha): self._finish_update(note, updated))
 
-    def _finish_update(self, note: str) -> None:
-        if note:
-            messagebox.showinfo("Update", note, parent=self.root)
+    def _finish_update(self, note: str, app_updated: bool) -> None:
+        if app_updated:
+            lead = "Mesh Chat is updated and will restart."
+        else:
+            lead = "Mesh Chat was already the latest copy."
+        messagebox.showinfo("Update", " ".join(part for part in (lead, note) if part), parent=self.root)
         self._restart_for_update()
 
     def _restart_for_update(self) -> None:
