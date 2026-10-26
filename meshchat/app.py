@@ -688,16 +688,12 @@ class App:
     def _install_update(self, sha: str, flash: bool) -> None:
         self.tracker.stop()
         try:
-            kept: list[str] = []
             if sha:
-                kept = install_update(install_root(), sha, on_status=self._install_status)
+                install_update(install_root(), sha, on_status=self._install_status)
             note = ""
-            if kept:
-                note = "Left your changes in place: " + ", ".join(kept)
             if flash:
                 self._install_status("Updating Tracker")
-                flashed = update_tracker(install_root())
-                note = flashed if not note else note + "\n" + flashed
+                note = update_tracker(install_root())
         except Exception as exc:
             self._jobs.put(lambda detail=str(exc): self._update_failed(detail))
             return

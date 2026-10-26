@@ -2,16 +2,9 @@ import io
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
-from meshchat.update import (
-    UpdateStatus,
-    apply_archive,
-    local_revision,
-    parse_name_status,
-    porcelain_paths,
-    remote_revision,
-    select_updates,
-)
+from meshchat.update import UpdateStatus, _update_git, apply_archive, local_revision, remote_revision
 
 
 class _Body:
@@ -36,14 +29,21 @@ class UpdateTests(unittest.TestCase):
 
         self.assertEqual(remote_revision(opener), "abc1234")
 
-    def test_local_files_are_not_replaced(self) -> None:
-        kept = porcelain_paths(" M meshchat/app.py\n?? notes/mine.txt\nR  old.py -> meshchat/link.py\n")
-        self.assertEqual(kept, {"meshchat/app.py", "notes/mine.txt", "meshchat/link.py"})
-        rows = parse_name_status("M\tmeshchat/app.py\nM\tmeshchat/update.py\nD\tmeshchat/old.py\n")
-        take, remove = select_updates(rows, kept)
-        self.assertEqual(take, ["meshchat/update.py"])
-        self.assertEqual(remove, ["meshchat/old.py"])
-        self.assertNotIn("meshchat/app.py", take)
+    def test_git_update_replaces_local_files(self) -> None:
+        calls: list[list[str]] = []
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake(_root, args, timeout=60):
+            calls.append(args)
+            return _Result()
+
+        with patch("meshchat.update._git", side_effect=fake):
+            _update_git(Path("."))
+        self.assertEqual(calls, [["fetch", "origin", "main"], ["reset", "--hard", "origin/main"]])
 
     def test_status_is_available_when_the_commit_differs(self) -> None:
         same = UpdateStatus(local="abc", remote="abc")
