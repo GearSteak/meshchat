@@ -10,8 +10,9 @@ import tkinter.font as tkfont
 import webbrowser
 from tkinter import messagebox, simpledialog
 
+from meshchat.flash import bundled_version, firmware_needs_update, update_tracker
 from meshchat.gps_share import GpsShare
-from meshchat.link import Tracker
+from meshchat.link import Tracker, tracker_port
 from meshchat.protocol import BROADCAST, MAX_TEXT
 from meshchat.store import Store, data_dir
 from meshchat.update import check_update, install_root, install_update, relaunch
@@ -144,7 +145,7 @@ class App:
         actions = tk.Frame(side, bg=PANEL, padx=12, pady=10)
         actions.pack(fill="x")
         for label, command in (
-            ("Add", self.add_contact),
+            ("New chat", self.new_chat),
             ("Rename", self.rename_contact),
             ("Remove", self.remove_contact),
         ):
@@ -177,7 +178,6 @@ class App:
         tk.Frame(chat, bg=LINE, height=1).pack(fill="x")
 
         thread_wrap = tk.Frame(chat, bg=CHAT)
-        thread_wrap.pack(fill="both", expand=True)
         self.thread = tk.Canvas(thread_wrap, bg=CHAT, highlightthickness=0, bd=0)
         thread_scroll = tk.Scrollbar(thread_wrap, command=self.thread.yview)
         self.thread.configure(yscrollcommand=thread_scroll.set)
@@ -186,21 +186,29 @@ class App:
         self.thread.bind("<Configure>", self._thread_resized)
         self._bind_wheel(self.thread, self.thread)
 
-        composer = tk.Frame(chat, bg=FIELD, padx=12, pady=10)
-        composer.pack(fill="x")
-        tk.Frame(chat, bg=LINE, height=1).pack(fill="x", before=composer)
-        pill = tk.Frame(composer, bg=FIELD, highlightbackground=LINE, highlightthickness=1)
-        pill.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        composer = tk.Frame(chat, bg=FIELD, padx=12, pady=12)
+        composer.pack(fill="x", side="bottom")
+        tk.Frame(chat, bg=LINE, height=1).pack(fill="x", side="bottom")
         self.entry = tk.Entry(
-            pill,
+            composer,
             bg=FIELD,
-            fg=INK,
+            fg=MUTED,
             insertbackground=INK,
-            relief="flat",
-            font=ui_font(12),
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=LINE,
+            highlightcolor=MINE,
+            font=ui_font(13),
         )
-        self.entry.pack(fill="x", padx=12, ipady=8)
+        self.entry.pack(side="left", fill="x", expand=True, padx=(0, 8), ipady=8, ipadx=8)
+        self._placeholder = "Type a message"
+        self._entry_empty = True
+        self.entry.insert(0, self._placeholder)
+        self.entry.bind("<FocusIn>", self._entry_focus_in)
+        self.entry.bind("<FocusOut>", self._entry_focus_out)
         self.entry.bind("<Return>", lambda _e: self.send())
+        self.root.bind("<Key>", self._route_typing)
         tk.Button(
             composer,
             text="Send",
@@ -210,10 +218,11 @@ class App:
             activebackground="#0066d6",
             activeforeground=MINE_INK,
             relief="flat",
-            padx=16,
+            padx=18,
             pady=8,
-            font=ui_font(11, True),
+            font=ui_font(12, True),
         ).pack(side="right")
+        thread_wrap.pack(fill="both", expand=True)
 
         self.status = tk.Label(
             self.root,
@@ -334,12 +343,17 @@ class App:
             return
         messages = self.store.messages(phone)
         if not messages:
+            if phone == BROADCAST:
+                empty = "No messages yet.\nNew chat opens one radio. Typing here reaches every radio."
+            else:
+                empty = f"No messages with {self.store.contact_name(phone)} yet.\nType below and press Send."
             canvas.create_text(
                 width / 2,
                 90,
-                text="No messages yet",
+                text=empty,
                 fill=MUTED,
                 font=ui_font(12),
+                justify="center",
             )
             canvas.configure(scrollregion=(0, 0, width, 200))
             return
@@ -410,9 +424,9 @@ class App:
         self._paint_number()
         self.show_thread()
 
-    def add_contact(self) -> None:
+    def new_chat(self) -> None:
         raw = simpledialog.askstring(
-            "Save a number",
+            "New chat",
             "Number from the other radio's About screen.",
             parent=self.root,
         )
@@ -421,17 +435,19 @@ class App:
         try:
             phone = parse_phone(raw)
         except ValueError as exc:
-            messagebox.showerror("Save a number", str(exc), parent=self.root)
+            messagebox.showerror("New chat", str(exc), parent=self.root)
             return
         if phone == self.store.phone():
-            messagebox.showerror("Save a number", "That is this Pi's own number.", parent=self.root)
+            messagebox.showerror("New chat", "That is this Pi's own number.", parent=self.root)
             return
-        name = simpledialog.askstring("Save a number", "Name", parent=self.root)
-        if name is None:
-            return
-        self.store.save_contact(phone, name)
+        self.open_chat(phone)
+
+    def open_chat(self, phone: int) -> None:
+        self.store.ensure_contact(phone)
         self.refresh_contacts(phone)
         self.show_thread()
+        self.entry.focus_set()
+        self.entry.icursor("end")
 
     def rename_contact(self) -> None:
         phone = self.selected_phone()
@@ -463,9 +479,39 @@ class App:
         self.refresh_contacts(BROADCAST)
         self.show_thread()
 
+    def _entry_focus_in(self, _event: tk.Event) -> None:
+        if self._entry_empty:
+            self.entry.delete(0, "end")
+            self.entry.configure(fg=INK)
+            self._entry_empty = False
+
+    def _entry_focus_out(self, _event: tk.Event) -> None:
+        if self.entry.get().strip():
+            return
+        self._entry_empty = True
+        self.entry.delete(0, "end")
+        self.entry.insert(0, self._placeholder)
+        self.entry.configure(fg=MUTED)
+
+    def _route_typing(self, event: tk.Event) -> None:
+        if isinstance(event.widget, (tk.Entry, tk.Button, tk.Text)):
+            return None
+        if not event.char or not event.char.isprintable():
+            return None
+        self._entry_focus_in(event)
+        self.entry.focus_set()
+        self.entry.insert("end", event.char)
+        return "break"
+
+    def message_text(self) -> str:
+        if self._entry_empty:
+            return ""
+        return self.entry.get().strip()
+
     def send(self) -> None:
-        text = self.entry.get().strip()
+        text = self.message_text()
         if not text:
+            self.entry.focus_set()
             return
         if len(text.encode("utf-8")) > MAX_TEXT:
             messagebox.showerror("Message", "That message is too long for the radio.", parent=self.root)
@@ -481,6 +527,9 @@ class App:
             return
         self.store.add_message(target, me, target, text, "sending")
         self.entry.delete(0, "end")
+        self._entry_empty = False
+        self.entry.configure(fg=INK)
+        self.entry.focus_set()
         if not self.tracker.send(target, text):
             self.store.mark_tx(target, 0, False)
             self.set_status("The Tracker is not connected. The message stayed here as not sent.")
@@ -504,6 +553,8 @@ class App:
             self.set_status(str(event.get("detail") or "Tracker disconnected"))
         elif op == "pong":
             self.set_status(f"Tracker connected on {self.tracker.port_name}")
+        elif op == "fw":
+            self.tracker.firmware = str(event.get("version") or "")
         elif op == "radio":
             if event.get("ok"):
                 self.set_status(f"Radio is listening  ·  {self.tracker.port_name}")
@@ -588,28 +639,52 @@ class App:
         messagebox.showerror("Update", detail or "Could not reach GitHub.", parent=self.root)
 
     def _offer_update(self, status) -> None:
-        if not status.available:
+        plugged = tracker_port() is not None
+        firmware = firmware_needs_update(self.tracker.firmware, bundled_version(install_root()), plugged)
+        refresh_app = status.available
+        flash = firmware or (refresh_app and plugged)
+        if not refresh_app and not flash:
             self._restore_update_button()
-            messagebox.showinfo("Update", "Mesh Chat is up to date.", parent=self.root)
+            if plugged:
+                text = "Mesh Chat and the Tracker are up to date."
+            else:
+                text = "Mesh Chat is up to date. Plug the Tracker in and press Update to refresh its firmware."
+            messagebox.showinfo("Update", text, parent=self.root)
             return
-        install = messagebox.askyesno(
-            "Update",
-            "A newer Mesh Chat is on GitHub. Install it and restart?",
-            parent=self.root,
-        )
-        if not install:
+        if refresh_app and flash:
+            question = "Install the latest Mesh Chat and update the Tracker?"
+        elif flash:
+            question = "Update the Tracker firmware? The Tracker will restart."
+        else:
+            question = (
+                "A newer Mesh Chat is on GitHub. Install it and restart? "
+                "The Tracker is not plugged in, so its firmware will not be updated."
+            )
+        if not messagebox.askyesno("Update", question, parent=self.root):
             self._restore_update_button()
             return
         self.update_btn.configure(text="Installing")
-        threading.Thread(target=self._install_update, args=(status.remote,), daemon=True).start()
+        threading.Thread(
+            target=self._install_update,
+            args=(status.remote if refresh_app else "", flash),
+            daemon=True,
+        ).start()
 
-    def _install_update(self, sha: str) -> None:
+    def _install_update(self, sha: str, flash: bool) -> None:
+        self.tracker.stop()
         try:
-            install_update(install_root(), sha)
+            if sha:
+                install_update(install_root(), sha)
+            note = update_tracker(install_root()) if flash else ""
         except Exception as exc:
             self.root.after(0, lambda: self._update_failed(str(exc)))
             return
-        self.root.after(0, self._restart_for_update)
+        self.root.after(0, lambda: self._finish_update(note))
+
+    def _finish_update(self, note: str) -> None:
+        if note:
+            messagebox.showinfo("Update", note, parent=self.root)
+        self._restart_for_update()
 
     def _restart_for_update(self) -> None:
         self.tracker.stop()

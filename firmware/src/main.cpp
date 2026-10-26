@@ -391,6 +391,14 @@ static void pollRadio() {
     radio->startReceive();
 }
 
+#ifndef MESHCHAT_FW
+#define MESHCHAT_FW "0"
+#endif
+
+static void reportFirmware() {
+    Serial.printf("FW %s\n", MESHCHAT_FW);
+}
+
 static void replyId() {
     Serial.printf("ID %lu\n", (unsigned long)phone);
 }
@@ -405,6 +413,7 @@ static void handleLine(char *text) {
     if (strcmp(text, "PING") == 0) {
         Serial.println("PONG");
         Serial.printf("RADIO %s\n", radioOk ? "ok" : "fail");
+        reportFirmware();
         replyId();
         reportGps();
         return;
@@ -512,6 +521,7 @@ void setup() {
     startGps();
     bool ok = beginRadio();
     Serial.printf("READY %lu\n", (unsigned long)phone);
+    reportFirmware();
     Serial.printf("RADIO %s\n", ok ? "ok" : "fail");
     Serial.printf("FREQ %.3f\n", freqMhz);
 }

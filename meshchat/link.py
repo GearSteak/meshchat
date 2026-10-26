@@ -32,6 +32,8 @@ def parse_line(line: str) -> dict | None:
     op = parts[0]
     if op == "PONG":
         return {"op": "pong"}
+    if op == "FW" and len(parts) >= 2:
+        return {"op": "fw", "version": parts[1]}
     if op == "ID" and len(parts) >= 2 and parts[1].isdigit():
         return {"op": "id", "phone": int(parts[1])}
     if op == "RADIO" and len(parts) >= 2:
@@ -80,6 +82,7 @@ class Tracker:
     def __init__(self, phone: int | None = None, port: str | None = None) -> None:
         self.events: queue.Queue[dict] = queue.Queue()
         self.wanted_phone = phone or 0
+        self.firmware = ""
         self._explicit = port
         self._ser: serial.Serial | None = None
         self._lock = threading.Lock()

@@ -39,6 +39,27 @@ class StoreTests(unittest.TestCase):
         self.store.ensure_contact(100003)
         self.assertEqual(self.store.contact_name(100003), "100003")
 
+    def test_new_chat_opens_that_number(self) -> None:
+        from meshchat.app import App
+        from meshchat.gps_share import GpsShare
+        from meshchat.link import Tracker
+
+        gps = GpsShare()
+        app = App(self.store, Tracker(port="COM199"), gps)
+        try:
+            self.store.set_phone(100001)
+            app.open_chat(166800)
+            app.root.update()
+            self.assertEqual(app.current, 166800)
+            self.assertEqual(app.title.cget("text"), "166800")
+            app.entry.insert("end", "hello")
+            app.send()
+            app.root.update()
+            self.assertEqual(self.store.messages(166800)[0].body, "hello")
+            self.assertEqual(self.store.contact_name(166800), "166800")
+        finally:
+            app.close()
+
     def test_phone_parser(self) -> None:
         self.assertEqual(parse_phone("100001"), 100001)
         with self.assertRaises(ValueError):

@@ -116,8 +116,8 @@ def install_update(root: Path, sha: str, blob: bytes | None = None, opener=urlli
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "git pull failed").strip()
             raise RuntimeError(detail)
-        return
-    apply_archive(root, blob if blob is not None else download_archive(opener), sha)
+    else:
+        apply_archive(root, blob if blob is not None else download_archive(opener), sha)
     requirements = root / "requirements.txt"
     if requirements.is_file():
         subprocess.run(

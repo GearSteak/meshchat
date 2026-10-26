@@ -37,6 +37,7 @@ class LineTests(unittest.TestCase):
         self.assertFalse(parse_line("RADIO fail -2")["ok"])
         self.assertEqual(parse_line("ID 100001")["phone"], 100001)
         self.assertEqual(parse_line("PONG")["op"], "pong")
+        self.assertEqual(parse_line("FW 1")["version"], "1")
 
 
 if __name__ == "__main__":
