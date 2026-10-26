@@ -35,6 +35,16 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(messages[0].msg_id, 50)
         self.assertEqual(self.store.phone(), 100001)
 
+    def test_unanswered_send_does_not_stay_sending(self) -> None:
+        self.store.add_message(100002, 100001, 100002, "hi", "sending")
+        self.store.db.execute("UPDATE messages SET ts = ? WHERE status = 'sending'", (0,))
+        self.store.db.commit()
+        self.assertEqual(self.store.fail_sending(12), 1)
+        self.assertEqual(self.store.messages(100002)[0].status, "failed")
+        self.store.add_message(100002, 100001, 100002, "still going", "sending")
+        self.assertEqual(self.store.fail_sending(12), 0)
+        self.assertEqual(self.store.messages(100002)[1].status, "sending")
+
     def test_unknown_sender_is_kept(self) -> None:
         self.store.ensure_contact(100003)
         self.assertEqual(self.store.contact_name(100003), "100003")

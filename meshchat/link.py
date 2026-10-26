@@ -134,6 +134,7 @@ class Tracker:
                 return False
             try:
                 self._ser.write(data)
+                self._ser.flush()
                 return True
             except serial.SerialException:
                 return False

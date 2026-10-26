@@ -9,11 +9,11 @@
 // Type 0 is a message (15 byte header + text). Type 1 is "delivered" (9 bytes).
 // Phone numbers are the device id. 0xFFFFFFFF is everyone.
 //
-// The T9 source passes 906875000 into RadioLib, which expects MHz and rejects
-// that as error -12. This bridge uses 906.875 MHz, the frequency those radios
-// were written to use, with the same bandwidth, spreading, coding, sync, and
-// preamble. Tracker V2 has a GC1109 amplifier, so the SX1262 is driven at
-// 11 dBm. That lands near the 22 dBm the T9 radios send on their own.
+// The T9 firmware calls RadioLib begin() with 906875000. RadioLib treats that
+// as MHz, rejects it, and leaves the frequency register untouched. Bandwidth,
+// spreading, coding, and sync are still applied. This bridge makes that same
+// call so it sits on the channel the T9 radios are actually using. Tracker V2
+// has a GC1109 amplifier, so the SX1262 is driven at 11 dBm.
 
 static const int kCs = 8;
 static const int kDio1 = 14;
@@ -31,6 +31,8 @@ static const int kGpsRx = 33;
 static const int kGpsTx = 34;
 static const int kGpsReset = 35;
 
+// Same number LoRaComm.cpp passes to RadioLib. It is not a MHz value.
+static const float kPhoneBeginFreq = 906875000.0f;
 static const float kBandwidth = 250.0f;
 static const uint8_t kSpread = 12;
 static const uint8_t kCoding = 8;
@@ -242,7 +244,11 @@ static bool beginRadio() {
         mod = new Module(hal, kCs, kDio1, kReset, kBusy);
         radio = new SX1262(mod);
     }
-    int state = radio->begin(freqMhz, kBandwidth, kSpread, kCoding, kSync, kPower, kPreamble, kTcxo, false);
+    float beginFreq = freqMhz;
+    if (!prefs.isKey("freq")) {
+        beginFreq = kPhoneBeginFreq;
+    }
+    int state = radio->begin(beginFreq, kBandwidth, kSpread, kCoding, kSync, kPower, kPreamble, kTcxo, false);
     if (state == RADIOLIB_ERR_CHIP_NOT_FOUND || state == RADIOLIB_ERR_SPI_CMD_FAILED) {
         radioOk = false;
         return false;

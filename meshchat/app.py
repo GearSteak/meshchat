@@ -549,6 +549,9 @@ class App:
             except queue.Empty:
                 break
             job()
+        if self.store.fail_sending(12):
+            self.show_thread()
+            self.set_status("The Tracker did not finish sending. The message stayed here as not sent.")
         if self.root.winfo_exists():
             self.root.after(100, self.poll)
 
@@ -558,6 +561,8 @@ class App:
             self.set_status(f"Tracker connected on {event.get('port', '')}")
         elif op == "down":
             self.set_status(str(event.get("detail") or "Tracker disconnected"))
+            if self.store.fail_sending():
+                self.show_thread()
         elif op == "pong":
             self.set_status(f"Tracker connected on {self.tracker.port_name}")
         elif op == "fw":
@@ -590,6 +595,8 @@ class App:
             self.gps.send_nmea(str(event.get("sentence") or ""))
         elif op == "err":
             detail = str(event.get("detail") or "Radio error")
+            if detail in {"nophone", "send", "empty", "long", "unknown"} and self.store.fail_sending():
+                self.show_thread()
             if detail == "nophone":
                 detail = "Set your number, then send again."
             elif detail == "send":

@@ -185,6 +185,17 @@ class Store:
             for r in rows
         ]
 
+    def fail_sending(self, older_than: float | None = None) -> int:
+        if older_than is None:
+            cur = self.db.execute("UPDATE messages SET status = 'failed' WHERE status = 'sending'")
+        else:
+            cur = self.db.execute(
+                "UPDATE messages SET status = 'failed' WHERE status = 'sending' AND ts < ?",
+                (time.time() - older_than,),
+            )
+        self.db.commit()
+        return int(cur.rowcount)
+
     def mark_tx(self, peer: int, msg_id: int, ok: bool) -> None:
         row = self.db.execute(
             "SELECT id FROM messages WHERE peer = ? AND status = 'sending' "
