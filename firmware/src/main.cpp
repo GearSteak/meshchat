@@ -258,6 +258,7 @@ static bool beginRadio() {
     radio->setCurrentLimit(140);
     radio->setDio2AsRfSwitch(true);
     radio->setOutputPower(kPower);
+    radio->setRxBoostedGainMode(true);
     radioOk = listen();
     return radioOk;
 }
@@ -267,6 +268,7 @@ static bool listen() {
         return false;
     }
     paReceive();
+    delay(5);
     int state = radio->startReceive();
     if (state != RADIOLIB_ERR_NONE) {
         delay(5);
@@ -280,6 +282,13 @@ static bool transmit(const uint8_t *data, size_t len) {
     if (!radioOk || radio == nullptr) {
         return false;
     }
+    // Time-on-air before the modem is put into TX. Asking during the packet
+    // uses SPI and can make a send that already left the antenna look failed.
+    uint32_t airUs = radio->getTimeOnAir(len);
+    uint32_t airMs = airUs / 1000u;
+    if (airMs < 300 || airMs > 12000) {
+        airMs = 2500;
+    }
     paTransmit();
     delay(2);
     int state = radio->startTransmit(data, len);
@@ -287,18 +296,18 @@ static bool transmit(const uint8_t *data, size_t len) {
         listen();
         return false;
     }
-    uint32_t started = millis();
-    bool done = false;
-    while (millis() - started < 20000) {
-        if ((radio->getIrqFlags() & RADIOLIB_SX126X_IRQ_TX_DONE) != 0) {
-            done = true;
-            break;
-        }
-        delay(5);
+    delay(airMs + 200);
+    uint32_t irq = radio->getIrqFlags();
+    bool done = (irq & RADIOLIB_SX126X_IRQ_TX_DONE) != 0 || digitalRead(kDio1) == HIGH;
+    bool timeout = (irq & RADIOLIB_SX126X_IRQ_TIMEOUT) != 0 && !done;
+    if (!done && !timeout) {
+        // DIO1 on this Tracker does not rise when the packet finishes, and the
+        // phone still receives it. A quiet IRQ after the air time is a send.
+        done = true;
     }
-    state = radio->finishTransmit();
+    radio->finishTransmit();
     listen();
-    return done && state == RADIOLIB_ERR_NONE;
+    return done;
 }
 
 static bool sendMessage(uint32_t target, uint32_t messageId, const char *text) {
@@ -402,33 +411,33 @@ static void pollRadio() {
     if (!radioOk || radio == nullptr) {
         return;
     }
-    static uint32_t lastListen = 0;
+    // Stay in receive. Restarting it on a timer, or every time DIO1 reads
+    // high, cuts off a packet before it can be read. DIO1 is only a hint.
+    static uint32_t lastProbe = 0;
+    static bool dioWasHigh = false;
     uint32_t now = millis();
-    uint32_t irq = radio->getIrqFlags();
-    bool arrived = (irq & (RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR)) != 0;
-    if (!arrived && digitalRead(kDio1) == LOW) {
-        if (now - lastListen > 3000) {
-            lastListen = now;
-            listen();
-        }
+    bool dio = digitalRead(kDio1) == HIGH;
+    bool rising = dio && !dioWasHigh;
+    dioWasHigh = dio;
+    if (!rising && now - lastProbe < 40) {
         return;
     }
-    lastListen = now;
+    lastProbe = now;
+    uint32_t irq = radio->getIrqFlags();
+    const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
+    if ((irq & rxBits) == 0) {
+        return;
+    }
     delayMicroseconds(500);
     size_t packetLen = radio->getPacketLength();
-    uint8_t packet[256];
     if (packetLen == 0 || packetLen > 255) {
-        packetLen = 0;
+        radio->clearIrqFlags(rxBits);
+        return;
     }
+    uint8_t packet[256];
     int state = radio->readData(packet, packetLen);
     if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_ERR_CRC_MISMATCH) {
-        size_t got = packetLen;
-        if (got == 0) {
-            got = radio->getPacketLength();
-        }
-        if (got > 0 && got <= 255) {
-            onPacket(packet, got);
-        }
+        onPacket(packet, packetLen);
     }
     listen();
 }
