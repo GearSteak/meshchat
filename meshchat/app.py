@@ -594,9 +594,11 @@ class App:
             self.set_status(f"Tracker connected on {self.tracker.port_name}")
         elif op == "fw":
             self.tracker.firmware = str(event.get("version") or "")
+            if self.status.cget("text").startswith("Radio is listening"):
+                self.set_status(self._listening_status())
         elif op == "radio":
             if event.get("ok"):
-                self.set_status(f"Radio is listening  ·  {self.tracker.port_name}")
+                self.set_status(self._listening_status())
             else:
                 self.set_status(f"Radio failed to start ({event.get('detail')})")
         elif op == "id":
@@ -748,6 +750,12 @@ class App:
         self.gps.stop()
         self.store.close()
         relaunch()
+
+    def _listening_status(self) -> str:
+        text = f"Radio is listening  ·  {self.tracker.port_name}"
+        if self.tracker.firmware:
+            text += f"  ·  firmware {self.tracker.firmware}"
+        return text
 
     def set_status(self, text: str) -> None:
         good = text.startswith("Tracker connected") or text.startswith("Radio is listening")

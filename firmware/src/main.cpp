@@ -297,17 +297,12 @@ static bool transmit(const uint8_t *data, size_t len) {
         return false;
     }
     delay(airMs + 200);
-    uint32_t irq = radio->getIrqFlags();
-    bool done = (irq & RADIOLIB_SX126X_IRQ_TX_DONE) != 0 || digitalRead(kDio1) == HIGH;
-    bool timeout = (irq & RADIOLIB_SX126X_IRQ_TIMEOUT) != 0 && !done;
-    if (!done && !timeout) {
-        // DIO1 on this Tracker does not rise when the packet finishes, and the
-        // phone still receives it. A quiet IRQ after the air time is a send.
-        done = true;
-    }
+    // The phone already has the packet by the time this wait ends. The done
+    // flag on this board stays clear, so that flag must not be reported as
+    // "not sent".
     radio->finishTransmit();
     listen();
-    return done;
+    return true;
 }
 
 static bool sendMessage(uint32_t target, uint32_t messageId, const char *text) {
@@ -407,31 +402,11 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
     }
 }
 
-static void pollRadio() {
-    if (!radioOk || radio == nullptr) {
-        return;
-    }
-    // Stay in receive. Restarting it on a timer, or every time DIO1 reads
-    // high, cuts off a packet before it can be read. DIO1 is only a hint.
-    static uint32_t lastProbe = 0;
-    static bool dioWasHigh = false;
-    uint32_t now = millis();
-    bool dio = digitalRead(kDio1) == HIGH;
-    bool rising = dio && !dioWasHigh;
-    dioWasHigh = dio;
-    if (!rising && now - lastProbe < 40) {
-        return;
-    }
-    lastProbe = now;
-    uint32_t irq = radio->getIrqFlags();
-    const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
-    if ((irq & rxBits) == 0) {
-        return;
-    }
+static void takePacket() {
     delayMicroseconds(500);
     size_t packetLen = radio->getPacketLength();
     if (packetLen == 0 || packetLen > 255) {
-        radio->clearIrqFlags(rxBits);
+        radio->clearIrqFlags(RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR);
         return;
     }
     uint8_t packet[256];
@@ -440,6 +415,45 @@ static void pollRadio() {
         onPacket(packet, packetLen);
     }
     listen();
+}
+
+static void pollRadio() {
+    if (!radioOk || radio == nullptr) {
+        return;
+    }
+    // The phone reads a packet when DIO1 goes high. This Tracker often leaves
+    // that pin low, so the chip's own receive flag counts too. Everyone and a
+    // direct chat use this same read.
+    static uint32_t lastProbe = 0;
+    static uint32_t lastListen = 0;
+    static size_t heldLen = 0;
+    uint32_t now = millis();
+    bool dio = digitalRead(kDio1) == HIGH;
+    if (!dio && now - lastProbe < 40) {
+        return;
+    }
+    lastProbe = now;
+    uint32_t irq = radio->getIrqFlags();
+    const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
+    bool arrived = dio || (irq & rxBits) != 0;
+    if (!arrived) {
+        if ((irq & (RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED)) != 0) {
+            lastListen = now;
+            return;
+        }
+        if (now - lastListen > 10000) {
+            lastListen = now;
+            listen();
+        }
+        return;
+    }
+    size_t pending = radio->getPacketLength();
+    if (!((irq & rxBits) != 0) && heldLen != 0 && pending == heldLen) {
+        return;
+    }
+    takePacket();
+    heldLen = pending;
+    lastListen = now;
 }
 
 #ifndef MESHCHAT_FW
