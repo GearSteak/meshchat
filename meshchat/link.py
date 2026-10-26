@@ -179,7 +179,10 @@ class Tracker:
                 buf += chunk
                 while b"\n" in buf:
                     raw, buf = buf.split(b"\n", 1)
-                    event = parse_line(raw.decode("utf-8", "replace"))
+                    try:
+                        event = parse_line(raw.decode("utf-8", "replace"))
+                    except (ValueError, UnicodeError):
+                        event = None
                     if event:
                         self.events.put(event)
             with self._lock:

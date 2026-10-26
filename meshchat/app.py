@@ -551,13 +551,19 @@ class App:
                 event = self.tracker.events.get_nowait()
             except queue.Empty:
                 break
-            self.on_event(event)
+            try:
+                self.on_event(event)
+            except Exception:
+                self.set_status("Mesh Chat skipped a bad radio update.")
         while True:
             try:
                 job = self._jobs.get_nowait()
             except queue.Empty:
                 break
-            job()
+            try:
+                job()
+            except Exception:
+                self.set_status("Mesh Chat skipped a bad radio update.")
         if self.store.fail_sending(12):
             self.show_thread()
             self.set_status("The Tracker did not finish sending. The message stayed here as not sent.")
@@ -628,9 +634,9 @@ class App:
         peer = BROADCAST if target == BROADCAST else sender
         self.store.ensure_contact(sender)
         self.store.add_message(peer, sender, target, event["text"], "received", int(event["id"]))
-        self.refresh_contacts(self.current)
-        if self.current == peer:
-            self.show_thread()
+        self.refresh_contacts(peer)
+        self.show_thread()
+        self.set_status(f"Message from {sender}")
 
     def on_gps(self, event: dict) -> None:
         fix = int(event.get("fix") or 0)

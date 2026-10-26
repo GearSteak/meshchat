@@ -224,6 +224,8 @@ static void paTransmit() {
     digitalWrite(kPaTx, HIGH);
 }
 
+static bool listen();
+
 static void blink() {
     digitalWrite(kLed, HIGH);
     delay(40);
@@ -256,10 +258,22 @@ static bool beginRadio() {
     radio->setCurrentLimit(140);
     radio->setDio2AsRfSwitch(true);
     radio->setOutputPower(kPower);
-    paReceive();
-    state = radio->startReceive();
-    radioOk = (state == RADIOLIB_ERR_NONE);
+    radioOk = listen();
     return radioOk;
+}
+
+static bool listen() {
+    if (radio == nullptr) {
+        return false;
+    }
+    paReceive();
+    int state = radio->startReceive();
+    if (state != RADIOLIB_ERR_NONE) {
+        delay(5);
+        paReceive();
+        state = radio->startReceive();
+    }
+    return state == RADIOLIB_ERR_NONE;
 }
 
 static bool transmit(const uint8_t *data, size_t len) {
@@ -269,8 +283,7 @@ static bool transmit(const uint8_t *data, size_t len) {
     paTransmit();
     delay(2);
     int state = radio->transmit(data, len);
-    paReceive();
-    radio->startReceive();
+    listen();
     return state == RADIOLIB_ERR_NONE;
 }
 
@@ -375,22 +388,35 @@ static void pollRadio() {
     if (!radioOk || radio == nullptr) {
         return;
     }
-    if (digitalRead(kDio1) == LOW) {
+    static uint32_t lastListen = 0;
+    uint32_t now = millis();
+    uint32_t irq = radio->getIrqFlags();
+    bool arrived = (irq & (RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR)) != 0;
+    if (!arrived && digitalRead(kDio1) == LOW) {
+        if (now - lastListen > 3000) {
+            lastListen = now;
+            listen();
+        }
         return;
     }
+    lastListen = now;
     delayMicroseconds(500);
     size_t packetLen = radio->getPacketLength();
-    if (packetLen == 0 || packetLen > 255) {
-        radio->startReceive();
-        return;
-    }
     uint8_t packet[256];
-    int state = radio->readData(packet, packetLen);
-    if (state == RADIOLIB_ERR_NONE) {
-        onPacket(packet, packetLen);
+    if (packetLen == 0 || packetLen > 255) {
+        packetLen = 0;
     }
-    paReceive();
-    radio->startReceive();
+    int state = radio->readData(packet, packetLen);
+    if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_ERR_CRC_MISMATCH) {
+        size_t got = packetLen;
+        if (got == 0) {
+            got = radio->getPacketLength();
+        }
+        if (got > 0 && got <= 255) {
+            onPacket(packet, got);
+        }
+    }
+    listen();
 }
 
 #ifndef MESHCHAT_FW
