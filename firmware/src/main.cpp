@@ -229,6 +229,24 @@ static void paTransmit() {
 }
 
 static bool listen();
+static volatile bool dioPacket = false;
+
+static void IRAM_ATTR onDio1Rise() {
+    dioPacket = true;
+}
+
+// Heltec/Meshtastic undocumented SX1262 RX sensitivity patch (reg 0x8B5 bit0).
+static void applyRxPatch() {
+    if (radio == nullptr) {
+        return;
+    }
+    uint8_t value = 0;
+    if (radio->readRegister(0x08B5, &value, 1) != RADIOLIB_ERR_NONE) {
+        return;
+    }
+    value |= 0x01;
+    radio->writeRegister(0x08B5, &value, 1);
+}
 
 static void blink() {
     digitalWrite(kLed, HIGH);
@@ -260,10 +278,16 @@ static bool beginRadio() {
         radioOk = false;
         return false;
     }
+    // begin() returns early on the bad phone frequency, so finish the bits it
+    // skipped — same post-steps Meshtastic runs on this SX1262.
+    radio->fixPaClamping();
     radio->setCurrentLimit(140);
     radio->setDio2AsRfSwitch(true);
     radio->setOutputPower(kPower);
     radio->setRxBoostedGainMode(true);
+    radio->setCRC(2);
+    applyRxPatch();
+    radio->setDio1Action(onDio1Rise);
     radioOk = listen();
     return radioOk;
 }
@@ -278,10 +302,13 @@ static bool listen() {
     radio->standby();
     paReceive();
     delay(5);
+    applyRxPatch();
+    dioPacket = false;
     int state = radio->startReceive();
     if (state != RADIOLIB_ERR_NONE) {
         delay(20);
         paReceive();
+        applyRxPatch();
         state = radio->startReceive();
     }
     return state == RADIOLIB_ERR_NONE;
@@ -296,6 +323,7 @@ static bool transmit(const uint8_t *data, size_t len) {
     if (airMs < 200 || airMs > 8000) {
         airMs = 1500;
     }
+    radio->clearDio1Action();
     paTransmit();
     delay(2);
     // startTransmit waits forever if BUSY stays high. The packet is already on
@@ -303,6 +331,7 @@ static bool transmit(const uint8_t *data, size_t len) {
     // goes back to listening. Set the modem up and start TX without that wait.
     int state = radio->standby();
     if (state != RADIOLIB_ERR_NONE) {
+        radio->setDio1Action(onDio1Rise);
         listen();
         return false;
     }
@@ -313,6 +342,7 @@ static bool transmit(const uint8_t *data, size_t len) {
         radio->headerType,
         radio->invertIQEnabled);
     if (state != RADIOLIB_ERR_NONE) {
+        radio->setDio1Action(onDio1Rise);
         listen();
         return false;
     }
@@ -320,6 +350,7 @@ static bool transmit(const uint8_t *data, size_t len) {
     radio->setBufferBaseAddress();
     state = radio->writeBuffer(data, (uint8_t)len);
     if (state != RADIOLIB_ERR_NONE) {
+        radio->setDio1Action(onDio1Rise);
         listen();
         return false;
     }
@@ -329,6 +360,8 @@ static bool transmit(const uint8_t *data, size_t len) {
     // Do not SPI-poll during the air time. That blocked the USB task long
     // enough for the Pi write to error out and tear down the Mesh Chat window.
     delay(airMs + 300);
+    radio->clearIrqStatus();
+    radio->setDio1Action(onDio1Rise);
     paReceive();
     delay(10);
     listen();
@@ -387,8 +420,18 @@ static bool alreadySaw(uint32_t from, uint32_t messageId) {
     return false;
 }
 
+static void dumpHeard(const uint8_t *packet, size_t packetLen, const char *why) {
+    Serial.printf("HEARD %u %s", (unsigned)packetLen, why);
+    size_t n = packetLen < 16 ? packetLen : 16;
+    for (size_t i = 0; i < n; i++) {
+        Serial.printf(" %02X", packet[i]);
+    }
+    Serial.println();
+}
+
 static void onPacket(uint8_t *packet, size_t packetLen) {
     if (packetLen < 9) {
+        dumpHeard(packet, packetLen, "short");
         return;
     }
     uint32_t sender = ((uint32_t)packet[0] << 24) | ((uint32_t)packet[1] << 16) |
@@ -404,7 +447,7 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
         return;
     }
     if (kind != kTypeMessage || packetLen < 15) {
-        Serial.printf("HEARD %u bad-type\n", (unsigned)packetLen);
+        dumpHeard(packet, packetLen, "bad-type");
         return;
     }
     // The number we send as is not a reason to hide a packet. Replies often
@@ -413,7 +456,7 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
                          ((uint32_t)packet[11] << 8) | packet[12];
     uint16_t textLen = ((uint16_t)packet[13] << 8) | packet[14];
     if (textLen == 0 || textLen > kMaxText || (size_t)(15 + textLen) > packetLen) {
-        Serial.printf("HEARD %u bad-len\n", (unsigned)packetLen);
+        dumpHeard(packet, packetLen, "bad-len");
         return;
     }
     if (alreadySaw(sender, messageId)) {
@@ -438,9 +481,9 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
 static void takePacket() {
     // Same read path as the T9 LoRaComm.cpp once a packet is signaled.
     delayMicroseconds(500);
-    size_t packetLen = radio->getPacketLength();
+    size_t packetLen = radio->getPacketLength(true);
     if (packetLen == 0 || packetLen > 255) {
-        Serial.println("HEARD 0 empty");
+        radio->clearIrqStatus();
         listen();
         return;
     }
@@ -449,7 +492,8 @@ static void takePacket() {
     if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_ERR_CRC_MISMATCH) {
         onPacket(packet, packetLen);
     } else {
-        Serial.printf("HEARD %u read-%d\n", (unsigned)packetLen, (int)state);
+        dumpHeard(packet, packetLen, "read-fail");
+        Serial.printf("HEARD read-%d\n", (int)state);
     }
     listen();
 }
@@ -460,8 +504,9 @@ static void pollRadio() {
     }
     static uint32_t lastListen = 0;
     static uint32_t lastPa = 0;
-    static uint32_t lastProbe = 0;
+    static uint32_t lastSpi = 0;
     static uint32_t lastScan = 0;
+    static uint32_t lastStuck = 0;
     uint32_t now = millis();
 
     if (now - lastPa > 2000) {
@@ -469,25 +514,45 @@ static void pollRadio() {
         paReceive();
     }
 
-    // Do not trust DIO1 on this Tracker. A stuck-high pin used to call
-    // takePacket forever (HEARD empty + restart RX) and a stuck-low pin
-    // never saw phone traffic. Only the chip IRQ status means a packet.
-    if (now - lastProbe < 25) {
-        return;
+    bool flagged = dioPacket;
+    dioPacket = false;
+    bool dio = digitalRead(kDio1) == HIGH;
+    // Prefer the DIO edge. Only touch SPI when the pin says so, or slowly as
+    // a backup — constant getIrqFlags during RX kills reception on SX1262.
+    if (!flagged && !dio) {
+        if (now - lastSpi < 250) {
+            if (now - lastScan > 5000) {
+                lastScan = now;
+                lastSpi = now;
+                uint32_t irq = radio->getIrqFlags();
+                Serial.printf("SCAN irq=%lu dio=%d ctx=%d rssi=%.1f\n",
+                              (unsigned long)irq,
+                              digitalRead(kDio1),
+                              digitalRead(kPaCtx),
+                              radio->getRSSI(false));
+            }
+            if (now - lastListen > 20000) {
+                lastListen = now;
+                listen();
+            }
+            return;
+        }
+        lastSpi = now;
     }
-    lastProbe = now;
 
     uint32_t irq = radio->getIrqFlags();
-    const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
-    const uint32_t busyBits =
+    const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR |
+                            RADIOLIB_SX126X_IRQ_HEADER_ERR;
+    const uint32_t noisyBits =
         RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED;
 
-    if (now - lastScan > 4000) {
+    if (now - lastScan > 5000) {
         lastScan = now;
-        Serial.printf("SCAN irq=%lu dio=%d ctx=%d\n",
+        Serial.printf("SCAN irq=%lu dio=%d ctx=%d rssi=%.1f\n",
                       (unsigned long)irq,
                       digitalRead(kDio1),
-                      digitalRead(kPaCtx));
+                      digitalRead(kPaCtx),
+                      radio->getRSSI(false));
     }
 
     if ((irq & rxBits) != 0) {
@@ -495,12 +560,20 @@ static void pollRadio() {
         lastListen = now;
         return;
     }
-    if ((irq & busyBits) != 0) {
-        // Preamble/header in progress — do not restart RX.
+    // Meshtastic: sticky preamble bits alone must be cleared or the poll loop
+    // never settles and never restarts a clean RX window.
+    if ((irq & noisyBits) != 0 && (irq & rxBits) == 0) {
+        radio->clearIrqFlags(noisyBits);
         lastListen = now;
         return;
     }
-    if (now - lastListen > 12000) {
+    if (dio && (now - lastStuck > 3000)) {
+        lastStuck = now;
+        radio->clearIrqStatus();
+        listen();
+        return;
+    }
+    if (now - lastListen > 20000) {
         lastListen = now;
         listen();
     }
