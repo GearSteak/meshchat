@@ -36,20 +36,27 @@ def install_root() -> Path:
 
 def local_revision(root: Path) -> str | None:
     if (root / ".git").is_dir() and shutil.which("git"):
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode == 0:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=2,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            result = None
+        if result is not None and result.returncode == 0:
             sha = result.stdout.strip()
             if sha:
                 return sha
     path = root / REVISION_NAME
     if path.is_file():
-        sha = path.read_text(encoding="utf-8").strip()
+        try:
+            sha = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            sha = ""
         if sha:
             return sha
     return None

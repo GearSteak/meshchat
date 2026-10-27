@@ -52,7 +52,13 @@ def data_dir() -> str:
 class Store:
     def __init__(self, path: str) -> None:
         self.path = path
-        self.db = sqlite3.connect(path)
+        try:
+            self.db = sqlite3.connect(path, timeout=15)
+        except sqlite3.Error as exc:
+            raise RuntimeError(
+                "Could not open the Mesh Chat database. "
+                "Another Mesh Chat may still be running — close it or reboot the Pi."
+            ) from exc
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA foreign_keys = ON")
         self._create()

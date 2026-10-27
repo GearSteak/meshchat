@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
@@ -887,16 +888,49 @@ def status_label(status: str) -> str:
     return status
 
 
+def _startup_log(text: str) -> str:
+    path = os.path.join(data_dir(), "startup.log")
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError:
+        path = os.path.join(os.path.expanduser("~"), "meshchat-startup.log")
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+        except OSError:
+            return ""
+    return path
+
+
 def main() -> None:
-    path = os.path.join(data_dir(), "meshchat.sqlite")
-    store = Store(path)
-    port = os.environ.get("MESHCHAT_PORT") or None
-    tracker = Tracker(phone=store.phone() or 0, port=port)
-    gps = GpsShare()
-    gps.start()
-    app = App(store, tracker, gps)
-    if os.environ.get("MESHCHAT_SMOKE") == "1":
-        app.root.update()
-        app.close()
-        return
-    app.run()
+    import traceback
+
+    try:
+        path = os.path.join(data_dir(), "meshchat.sqlite")
+        store = Store(path)
+        port = os.environ.get("MESHCHAT_PORT") or None
+        tracker = Tracker(phone=store.phone() or 0, port=port)
+        gps = GpsShare()
+        gps.start()
+        app = App(store, tracker, gps)
+        if os.environ.get("MESHCHAT_SMOKE") == "1":
+            app.root.update()
+            app.close()
+            return
+        app.run()
+    except Exception as exc:
+        detail = traceback.format_exc()
+        log_path = _startup_log(detail)
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            where = f"\n\nDetails saved to:\n{log_path}" if log_path else ""
+            messagebox.showerror("Mesh Chat", f"Could not start.\n\n{exc}{where}")
+            root.destroy()
+        except Exception:
+            if log_path:
+                sys.stderr.write(f"Mesh Chat failed to start. See {log_path}\n")
+            else:
+                sys.stderr.write(detail)
+        raise SystemExit(1) from exc
