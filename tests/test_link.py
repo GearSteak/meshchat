@@ -50,10 +50,12 @@ class LineTests(unittest.TestCase):
                 self.port = ""
                 self.baudrate = 0
                 self.timeout = None
+                self.write_timeout = None
 
             def open(self) -> None:
                 opened["dtr"] = self.dtr
                 opened["rts"] = self.rts
+                opened["write_timeout"] = self.write_timeout
 
         import meshchat.link as link
 
@@ -65,6 +67,27 @@ class LineTests(unittest.TestCase):
             link.serial.Serial = original
         self.assertFalse(opened["dtr"])
         self.assertFalse(opened["rts"])
+        self.assertEqual(opened["write_timeout"], 2)
+
+    def test_write_survives_a_usb_io_error(self) -> None:
+        import meshchat.link as link
+
+        class Port:
+            is_open = True
+
+            def write(self, _data):
+                raise OSError(5, "Input/output error")
+
+            def flush(self):
+                return None
+
+            def close(self):
+                self.is_open = False
+
+        tracker = link.Tracker()
+        tracker._ser = Port()
+        self.assertFalse(tracker.write("PING"))
+        self.assertIsNone(tracker._ser)
 
 
 if __name__ == "__main__":

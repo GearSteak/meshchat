@@ -25,6 +25,7 @@ def open_link(port: str) -> serial.Serial:
     link.port = port
     link.baudrate = 115200
     link.timeout = 0.2
+    link.write_timeout = 2
     link.dtr = False
     link.rts = False
     link.open()
@@ -140,7 +141,14 @@ class Tracker:
                 self._ser.write(data)
                 self._ser.flush()
                 return True
-            except serial.SerialException:
+            except (serial.SerialException, OSError, TimeoutError, TypeError, ValueError):
+                # A Tracker reboot mid-write raises OSError on Linux, not only
+                # SerialException. That used to escape and kill the window.
+                try:
+                    self._ser.close()
+                except Exception:
+                    pass
+                self._ser = None
                 return False
 
     def _run(self) -> None:
@@ -175,7 +183,7 @@ class Tracker:
             while not self._stop.is_set():
                 try:
                     chunk = ser.read(256)
-                except serial.SerialException as exc:
+                except (serial.SerialException, OSError) as exc:
                     self.events.put({"op": "down", "detail": str(exc)})
                     break
                 if not chunk:

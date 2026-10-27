@@ -322,14 +322,11 @@ static bool transmit(const uint8_t *data, size_t len) {
     radio->clearIrqStatus();
     paTransmit();
     radio->setTx(0);
-    uint32_t started = millis();
-    while (millis() - started < airMs + 250) {
-        if (digitalRead(kDio1) == HIGH || (radio->getIrqFlags() & RADIOLIB_SX126X_IRQ_TX_DONE) != 0) {
-            break;
-        }
-        delay(10);
-    }
-    radio->finishTransmit();
+    // Do not SPI-poll during the air time. That blocked the USB task long
+    // enough for the Pi write to error out and tear down the Mesh Chat window.
+    delay(airMs + 300);
+    paReceive();
+    delay(10);
     listen();
     return true;
 }

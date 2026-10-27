@@ -95,6 +95,7 @@ class App:
         self.root.configure(bg=BG)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._build()
+        self.root.report_callback_exception = self._tk_exception
         self.refresh_contacts(BROADCAST)
         self.show_thread()
         self.tracker.start()
@@ -543,36 +544,56 @@ class App:
             return ""
         return self.entry.get().strip()
 
+    def _tk_exception(self, exc, value, traceback_obj) -> None:
+        import traceback
+        from pathlib import Path
+
+        detail = "".join(traceback.format_exception(exc, value, traceback_obj))
+        try:
+            Path(data_dir(), "crash.log").write_text(detail, encoding="utf-8")
+        except OSError:
+            pass
+        try:
+            self.set_status("Mesh Chat hit an error. The window stayed open.")
+        except Exception:
+            pass
+
     def send(self) -> None:
-        text = self.message_text()
-        if not text:
-            self.entry.focus_set()
-            return
-        if len(text.encode("utf-8")) > MAX_TEXT:
-            messagebox.showerror("Message", "That message is too long for the radio.", parent=self.root)
-            return
-        me = self.store.phone()
-        if me is None:
-            self.edit_my_number()
+        try:
+            text = self.message_text()
+            if not text:
+                self.entry.focus_set()
+                return
+            if len(text.encode("utf-8")) > MAX_TEXT:
+                messagebox.showerror("Message", "That message is too long for the radio.", parent=self.root)
+                return
             me = self.store.phone()
             if me is None:
+                self.edit_my_number()
+                me = self.store.phone()
+                if me is None:
+                    return
+            target = self.selected_phone()
+            if target is None:
                 return
-        target = self.selected_phone()
-        if target is None:
-            return
-        row_id = self.store.add_message(target, me, target, text, "sending")
-        self.entry.delete(0, "end")
-        self._entry_empty = False
-        self.entry.configure(fg=INK)
-        self.entry.focus_set()
-        if not self.tracker.send(target, text):
-            self.store.mark_tx(target, 0, False)
-            self.set_status("The Tracker is not connected. The message stayed here as not sent.")
-        else:
-            # The other radio already has these. Waiting on the Tracker to
-            # agree left the bubble on "sending" forever.
-            self.store.mark_handed_off(row_id)
-        self.show_thread()
+            row_id = self.store.add_message(target, me, target, text, "sending")
+            self.entry.delete(0, "end")
+            self._entry_empty = False
+            self.entry.configure(fg=INK)
+            self.entry.focus_set()
+            if not self.tracker.send(target, text):
+                self.store.mark_tx(target, 0, False)
+                self.set_status("The Tracker is not connected. The message stayed here as not sent.")
+            else:
+                # The other radio already has these. Waiting on the Tracker to
+                # agree left the bubble on "sending" forever.
+                self.store.mark_handed_off(row_id)
+            self.show_thread()
+        except Exception as exc:
+            try:
+                self.set_status(f"Send failed: {exc}")
+            except Exception:
+                pass
 
     def poll(self) -> None:
         while True:
