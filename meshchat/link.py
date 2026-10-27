@@ -108,6 +108,8 @@ def parse_line(line: str) -> dict | None:
         return {"op": "heard", "detail": " ".join(parts[1:]) or "packet", "raw": text}
     if op == "SCAN":
         return {"op": "scan", "detail": " ".join(parts[1:]), "raw": text}
+    if op == "AIR":
+        return {"op": "air", "detail": " ".join(parts[1:]), "raw": text}
     if op == "IRQ":
         return {"op": "irq", "detail": " ".join(parts[1:]), "raw": text}
     if op == "ERR":

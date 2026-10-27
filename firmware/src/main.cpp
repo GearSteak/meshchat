@@ -491,66 +491,61 @@ static void pollRadio() {
     if (!radioOk || radio == nullptr) {
         return;
     }
+    // DIO1 on this Tracker is unreliable (FW13). Poll the chip IRQ over SPI.
+    // Do not clear preamble/header bits and do not call getRSSI — those abort
+    // an in-flight SF12 packet. Do not restart listen while a header is open.
+    static uint32_t lastProbe = 0;
     static uint32_t lastPa = 0;
     static uint32_t lastScan = 0;
     static uint32_t lastListen = 0;
+    static uint32_t lastAir = 0;
     uint32_t now = millis();
+    if (now - lastProbe < 40) {
+        return;
+    }
+    lastProbe = now;
 
-    // GPIO-only amp refresh. Never SPI-touch the modem while it is listening;
-    // getIrqFlags/getRSSI mid-SF12 was aborting phone packets before RX_DONE.
     if (now - lastPa > 5000) {
         lastPa = now;
         paReceive();
     }
 
-    bool flagged = dioPacket;
-    dioPacket = false;
-    bool dio = digitalRead(kDio1) == HIGH;
-    if (!flagged && !dio) {
-        if (now - lastScan > 5000) {
-            lastScan = now;
-            Serial.printf("SCAN dio=%d txen=%d ctx=%d\n",
-                          digitalRead(kDio1),
-                          digitalRead(kPaTx),
-                          digitalRead(kPaCtx));
-        }
-        // Rare clean restart only when fully idle — not every few seconds.
-        if (now - lastListen > 120000) {
-            lastListen = now;
-            listen();
-        }
-        return;
-    }
-
-    // DIO1 rose (or stuck high). Wait for RX_DONE without clearing preamble /
-    // header flags — those are normal mid-packet and clearing them + SPI
-    // thrashing was leaving us deaf while TX still worked.
+    uint32_t irq = radio->getIrqFlags();
     const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR |
                             RADIOLIB_SX126X_IRQ_HEADER_ERR;
-    uint32_t irq = 0;
-    uint32_t deadline = millis() + 8000;
-    while (millis() < deadline) {
-        irq = radio->getIrqFlags();
-        if ((irq & rxBits) != 0) {
-            break;
-        }
-        if (digitalRead(kDio1) == LOW && !dioPacket) {
-            // Edge without a finish — false alarm; stay in RX.
-            return;
-        }
-        delay(5);
-    }
+    const uint32_t airBits =
+        RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED;
 
-    Serial.printf("IRQ %lu dio=%d\n", (unsigned long)irq, digitalRead(kDio1));
     if ((irq & rxBits) != 0) {
+        Serial.printf("IRQ %lu\n", (unsigned long)irq);
         takePacket();
-        lastListen = millis();
+        lastListen = now;
         return;
     }
-    // Sticky DIO with no completion — clear and re-arm once.
-    radio->clearIrqStatus();
-    listen();
-    lastListen = millis();
+    if ((irq & airBits) != 0) {
+        // Packet in flight — leave flags alone and do not re-arm RX.
+        if (now - lastAir > 500) {
+            lastAir = now;
+            Serial.printf("AIR irq=%lu\n", (unsigned long)irq);
+        }
+        lastListen = now;
+        return;
+    }
+
+    if (now - lastScan > 5000) {
+        lastScan = now;
+        Serial.printf("SCAN irq=%lu dio=%d txen=%d ctx=%d\n",
+                      (unsigned long)irq,
+                      digitalRead(kDio1),
+                      digitalRead(kPaTx),
+                      digitalRead(kPaCtx));
+    }
+
+    // Only re-arm when truly idle. Mid-packet listen() was wiping phone TX.
+    if (now - lastListen > 60000) {
+        lastListen = now;
+        listen();
+    }
 }
 
 #ifndef MESHCHAT_FW

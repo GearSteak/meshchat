@@ -687,13 +687,16 @@ class App:
         elif op == "scan":
             detail = str(event.get("detail") or "")
             self.set_status(f"Radio scan {detail} · lines {self._serial_lines}"[:120])
+        elif op == "air":
+            detail = str(event.get("detail") or "")
+            self.set_status(f"Radio hearing air ({detail}) — waiting for packet end")
         elif op == "irq":
             detail = str(event.get("detail") or "")
             self.set_status(f"Radio status {detail}")
         elif op == "log":
             detail = str(event.get("detail") or "")
             # Firmware before ECHO support replies ERR unknown — still useful.
-            if detail.startswith(("RX", "HEARD", "IRQ", "RADIO", "FW", "SCAN", "READY")):
+            if detail.startswith(("RX", "HEARD", "IRQ", "AIR", "RADIO", "FW", "SCAN", "READY", "TUNE")):
                 self.set_status(f"Radio: {detail[:100]}")
             # If RX fields failed to parse, still force the text into Everyone.
             if detail.startswith("RX "):
