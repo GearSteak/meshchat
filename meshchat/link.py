@@ -16,10 +16,12 @@ JIGGLER_PID = 0x0002
 
 
 def open_link(port: str) -> serial.Serial:
-    """Open the Tracker without pulsing DTR or RTS.
+    """Open the Tracker without resetting it, then assert DTR for CDC output.
 
-    Those lines reset the ESP32, so the radio reboots every time Mesh Chat
-    connects and never stays up long enough to send or receive.
+    Opening with DTR/RTS already high resets the ESP32. But TinyUSB CDC on
+    this board discards every Serial.print until the host asserts DTR — that
+    is why Mesh Chat could SEND (host→device) while the radio log saw 0 bytes
+    back. Open with lines low, then raise DTR after the port is up.
     """
     link = serial.Serial()
     link.port = port
@@ -32,15 +34,20 @@ def open_link(port: str) -> serial.Serial:
     link.dtr = False
     link.rts = False
     link.open()
-    link.dtr = False
-    link.rts = False
-    # ESP32 USB-CDC often queues nothing until the host drains once.
+    # Keep RTS low. Raise DTR so USBSerial.connected becomes true and
+    # firmware println() actually reaches the Pi.
+    time.sleep(0.05)
+    try:
+        link.dtr = True
+        link.rts = False
+    except (serial.SerialException, OSError):
+        pass
     try:
         link.reset_input_buffer()
         link.reset_output_buffer()
     except (serial.SerialException, OSError):
         pass
-    time.sleep(0.2)
+    time.sleep(0.15)
     return link
 
 

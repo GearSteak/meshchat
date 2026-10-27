@@ -74,11 +74,13 @@ class LineTests(unittest.TestCase):
                 self.dsrdtr = True
                 self.rtscts = True
                 self.xonxoff = True
+                self._opened = False
 
             def open(self) -> None:
-                opened["dtr"] = self.dtr
-                opened["rts"] = self.rts
+                opened["dtr_at_open"] = self.dtr
+                opened["rts_at_open"] = self.rts
                 opened["write_timeout"] = self.write_timeout
+                self._opened = True
 
             def reset_input_buffer(self) -> None:
                 return None
@@ -89,13 +91,18 @@ class LineTests(unittest.TestCase):
         import meshchat.link as link
 
         original = link.serial.Serial
+        original_sleep = link.time.sleep
         link.serial.Serial = Port
+        link.time.sleep = lambda _s: None
         try:
-            open_link("COM8")
+            port = open_link("COM8")
         finally:
             link.serial.Serial = original
-        self.assertFalse(opened["dtr"])
-        self.assertFalse(opened["rts"])
+            link.time.sleep = original_sleep
+        self.assertFalse(opened["dtr_at_open"])
+        self.assertFalse(opened["rts_at_open"])
+        self.assertTrue(port.dtr)
+        self.assertFalse(port.rts)
         self.assertEqual(opened["write_timeout"], 2)
 
     def test_write_survives_a_usb_io_error(self) -> None:
