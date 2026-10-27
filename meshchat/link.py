@@ -57,25 +57,28 @@ def _uint32_field(raw: str) -> int | None:
 
 
 def parse_line(line: str) -> dict | None:
-    text = line.strip()
+    # Keep the raw text so the UI can show every Tracker line even when a
+    # field fails to parse. Sending can succeed while RX is silent if the
+    # reader path is dropping lines.
+    text = line.strip().strip("\x00")
     if not text:
         return None
     parts = text.split(" ")
     op = parts[0]
     if op == "PONG":
-        return {"op": "pong"}
+        return {"op": "pong", "raw": text}
     if op == "FW" and len(parts) >= 2:
-        return {"op": "fw", "version": parts[1]}
+        return {"op": "fw", "version": parts[1], "raw": text}
     if op == "ID" and len(parts) >= 2:
         phone = _uint32_field(parts[1])
         if phone is not None:
-            return {"op": "id", "phone": phone}
+            return {"op": "id", "phone": phone, "raw": text}
     if op == "RADIO" and len(parts) >= 2:
-        return {"op": "radio", "ok": parts[1] == "ok", "detail": " ".join(parts[1:])}
+        return {"op": "radio", "ok": parts[1] == "ok", "detail": " ".join(parts[1:]), "raw": text}
     if op == "ACK" and len(parts) >= 2:
         phone = _uint32_field(parts[1])
         if phone is not None:
-            return {"op": "ack", "phone": phone}
+            return {"op": "ack", "phone": phone, "raw": text}
     if op == "TX" and len(parts) >= 4:
         phone = _uint32_field(parts[1])
         msg_id = _uint32_field(parts[2])
@@ -85,6 +88,7 @@ def parse_line(line: str) -> dict | None:
                 "phone": phone,
                 "id": msg_id,
                 "ok": parts[3] == "ok",
+                "raw": text,
             }
     if op == "RX" and len(parts) >= 4:
         sender = _uint32_field(parts[1])
@@ -97,19 +101,24 @@ def parse_line(line: str) -> dict | None:
                 "target": target,
                 "id": msg_id,
                 "text": " ".join(parts[4:]),
+                "raw": text,
             }
-        return {"op": "log", "detail": text}
+        return {"op": "log", "detail": text, "raw": text}
     if op == "HEARD":
-        return {"op": "heard", "detail": " ".join(parts[1:]) or "packet"}
+        return {"op": "heard", "detail": " ".join(parts[1:]) or "packet", "raw": text}
+    if op == "SCAN":
+        return {"op": "scan", "detail": " ".join(parts[1:]), "raw": text}
     if op == "IRQ":
-        return {"op": "irq", "detail": " ".join(parts[1:])}
+        return {"op": "irq", "detail": " ".join(parts[1:]), "raw": text}
     if op == "ERR":
-        return {"op": "err", "detail": " ".join(parts[1:]) or "error"}
+        return {"op": "err", "detail": " ".join(parts[1:]) or "error", "raw": text}
     if op == "FREQ":
-        return {"op": "freq", "detail": " ".join(parts[1:])}
+        return {"op": "freq", "detail": " ".join(parts[1:]), "raw": text}
+    if op == "READY":
+        return {"op": "log", "detail": text, "raw": text}
     if op == "GPS" and len(parts) >= 2 and parts[1] == "none":
         sats = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
-        return {"op": "gps", "fix": 0, "sats": sats}
+        return {"op": "gps", "fix": 0, "sats": sats, "raw": text}
     if op == "GPS" and len(parts) >= 6:
         return {
             "op": "gps",
@@ -118,10 +127,11 @@ def parse_line(line: str) -> dict | None:
             "alt": float(parts[3]),
             "sats": int(parts[4]),
             "fix": int(parts[5]),
+            "raw": text,
         }
     if op == "NMEA" and len(parts) >= 2 and parts[1].startswith("$"):
-        return {"op": "nmea", "sentence": " ".join(parts[1:])}
-    return {"op": "log", "detail": text}
+        return {"op": "nmea", "sentence": " ".join(parts[1:]), "raw": text}
+    return {"op": "log", "detail": text, "raw": text}
 
 
 class Tracker:
@@ -199,27 +209,35 @@ class Tracker:
                 self._ser = ser
             self.port_name = name
             self.events.put({"op": "up", "port": name})
+            buf = b""
+            # Read loop owns the port; do not hold the write lock across
+            # ser.read() or a blocked flush can deadlock USB CDC on the Pi.
             self.write("PING")
             if self.wanted_phone:
                 self.write(f"ID {self.wanted_phone}")
             else:
                 self.write("ID?")
-            buf = b""
             while not self._stop.is_set():
                 try:
-                    chunk = ser.read(256)
+                    waiting = ser.in_waiting
+                    chunk = ser.read(waiting if waiting > 0 else 256)
                 except (serial.SerialException, OSError) as exc:
                     self.events.put({"op": "down", "detail": str(exc)})
                     break
                 if not chunk:
                     continue
                 buf += chunk
-                while b"\n" in buf:
-                    raw, buf = buf.split(b"\n", 1)
+                while b"\n" in buf or b"\r" in buf:
+                    if b"\n" in buf:
+                        raw, buf = buf.split(b"\n", 1)
+                    else:
+                        raw, buf = buf.split(b"\r", 1)
+                    raw = raw.rstrip(b"\r")
+                    decoded = raw.decode("utf-8", "replace")
                     try:
-                        event = parse_line(raw.decode("utf-8", "replace"))
-                    except (ValueError, UnicodeError):
-                        event = None
+                        event = parse_line(decoded)
+                    except (ValueError, UnicodeError, TypeError):
+                        event = {"op": "log", "detail": decoded, "raw": decoded}
                     if event:
                         self.events.put(event)
             with self._lock:

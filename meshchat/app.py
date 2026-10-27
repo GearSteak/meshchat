@@ -271,12 +271,13 @@ class App:
         self.status.pack(fill="x")
         self.radio_log = tk.Label(
             self.root,
-            text="Radio log: (waiting)",
+            text="Radio log: (waiting for Tracker lines)",
             bg=PANEL,
             fg=MUTED,
             anchor="w",
+            justify="left",
             padx=12,
-            pady=2,
+            pady=4,
             font=ui_font(8),
         )
         self.radio_log.pack(fill="x")
@@ -632,6 +633,11 @@ class App:
 
     def on_event(self, event: dict) -> None:
         op = event.get("op")
+        raw = str(event.get("raw") or "")
+        # Every Tracker line belongs in the radio log. If this stays quiet while
+        # a phone is transmitting, the USB reader never saw the line.
+        if raw and op not in {"gps", "nmea"}:
+            self.note_radio(raw)
         if op == "up":
             self.set_status(f"Tracker connected on {event.get('port', '')}")
         elif op == "down":
@@ -642,11 +648,9 @@ class App:
             self.set_status(f"Tracker connected on {self.tracker.port_name}")
         elif op == "fw":
             self.tracker.firmware = str(event.get("version") or "")
-            self.note_radio(f"FW {self.tracker.firmware}")
             if self.status.cget("text").startswith("Radio is listening"):
                 self.set_status(self._listening_status())
         elif op == "radio":
-            self.note_radio(f"RADIO {event.get('detail')}")
             if event.get("ok"):
                 self.set_status(self._listening_status())
             else:
@@ -666,22 +670,19 @@ class App:
                 self.tracker.wanted_phone = phone
                 self._paint_number()
         elif op == "rx":
-            self.note_radio(
-                f"RX {event.get('sender')} -> {event.get('target')}: {event.get('text')}"
-            )
             self.on_rx(event)
         elif op == "heard":
             detail = str(event.get("detail") or "packet")
-            self.note_radio(f"HEARD {detail}")
             self.set_status(f"Tracker heard a radio packet ({detail})")
+        elif op == "scan":
+            detail = str(event.get("detail") or "")
+            self.set_status(f"Radio scan {detail}"[:120])
         elif op == "irq":
             detail = str(event.get("detail") or "")
-            self.note_radio(f"IRQ {detail}")
             self.set_status(f"Radio status {detail}")
         elif op == "log":
             detail = str(event.get("detail") or "")
-            if detail.startswith(("RX", "HEARD", "IRQ", "RADIO", "FW")):
-                self.note_radio(detail)
+            if detail.startswith(("RX", "HEARD", "IRQ", "RADIO", "FW", "SCAN", "READY")):
                 self.set_status(f"Radio: {detail[:100]}")
         elif op == "tx":
             self.store.mark_tx(int(event["phone"]), int(event["id"]), bool(event.get("ok")))
@@ -710,7 +711,16 @@ class App:
         sender = int(event["sender"])
         target = int(event["target"])
         text = str(event.get("text") or "")
-        peer = BROADCAST if target == BROADCAST else sender
+        me = self.store.phone()
+        # Broadcasts land in Everyone. Direct messages land under the sender,
+        # including when the phone addressed a different id than My number.
+        if target == BROADCAST:
+            peer = BROADCAST
+        else:
+            peer = sender
+        if not show_incoming(sender, target, me):
+            self.set_status(f"Ignored radio line from {format_phone(sender)}")
+            return
         self.store.ensure_contact(sender)
         if peer != BROADCAST:
             self.store.ensure_contact(peer)
@@ -837,10 +847,12 @@ class App:
         text = " ".join(str(line).split())
         if not text:
             return
-        self._radio_lines.append(text[:120])
-        self._radio_lines = self._radio_lines[-3:]
+        if self._radio_lines and self._radio_lines[-1] == text[:160]:
+            return
+        self._radio_lines.append(text[:160])
+        self._radio_lines = self._radio_lines[-6:]
         try:
-            self.radio_log.configure(text="Radio log: " + " | ".join(self._radio_lines), fg=INK)
+            self.radio_log.configure(text="Radio log:\n" + "\n".join(self._radio_lines), fg=INK)
         except Exception:
             pass
 

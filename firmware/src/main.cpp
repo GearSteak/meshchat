@@ -272,6 +272,9 @@ static bool listen() {
     // Amp first, then the modem — same order as Meshtastic on this board.
     paReceive();
     delay(5);
+    radio->standby();
+    paReceive();
+    delay(5);
     int state = radio->startReceive();
     if (state != RADIOLIB_ERR_NONE) {
         delay(20);
@@ -454,7 +457,8 @@ static void pollRadio() {
     }
     static uint32_t lastListen = 0;
     static uint32_t lastPa = 0;
-    static uint32_t lastSpi = 0;
+    static uint32_t lastProbe = 0;
+    static uint32_t lastScan = 0;
     uint32_t now = millis();
 
     if (now - lastPa > 2000) {
@@ -462,30 +466,41 @@ static void pollRadio() {
         paReceive();
     }
 
-    // The phones only GPIO-poll DIO1 while listening. Hitting the chip over
-    // SPI every loop (getIrqFlags) during RX was breaking reception.
-    bool dio = digitalRead(kDio1) == HIGH;
-    bool arrived = dio;
-    if (!arrived && now - lastSpi > 100) {
-        lastSpi = now;
-        uint32_t irq = radio->getIrqFlags();
-        arrived = (irq & (RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR)) != 0;
-        if (!arrived &&
-            (irq & (RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED)) != 0) {
-            lastListen = now;
-            return;
-        }
-    }
-    if (!arrived) {
-        if (now - lastListen > 10000) {
-            lastListen = now;
-            listen();
-        }
+    // Do not trust DIO1 on this Tracker. A stuck-high pin used to call
+    // takePacket forever (HEARD empty + restart RX) and a stuck-low pin
+    // never saw phone traffic. Only the chip IRQ status means a packet.
+    if (now - lastProbe < 25) {
         return;
     }
+    lastProbe = now;
 
-    takePacket();
-    lastListen = now;
+    uint32_t irq = radio->getIrqFlags();
+    const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
+    const uint32_t busyBits =
+        RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED;
+
+    if (now - lastScan > 4000) {
+        lastScan = now;
+        Serial.printf("SCAN irq=%lu dio=%d pa=%d\n",
+                      (unsigned long)irq,
+                      digitalRead(kDio1),
+                      digitalRead(kPaTx));
+    }
+
+    if ((irq & rxBits) != 0) {
+        takePacket();
+        lastListen = now;
+        return;
+    }
+    if ((irq & busyBits) != 0) {
+        // Preamble/header in progress — do not restart RX.
+        lastListen = now;
+        return;
+    }
+    if (now - lastListen > 12000) {
+        lastListen = now;
+        listen();
+    }
 }
 
 #ifndef MESHCHAT_FW
