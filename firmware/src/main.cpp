@@ -138,8 +138,8 @@ static void handleNmea(char *sentence) {
     if (!gga && !rmc) {
         return;
     }
-    Serial.print("NMEA ");
-    Serial.println(sentence);
+    // Do not print every NMEA line to USB. That flood blocked the radio
+    // poll and Mesh Chat never saw RX lines.
     char scratch[160];
     strncpy(scratch, sentence, sizeof(scratch) - 1);
     scratch[sizeof(scratch) - 1] = '\0';
@@ -175,7 +175,8 @@ static void handleNmea(char *sentence) {
 }
 
 static void pollGps() {
-    while (Serial1.available() > 0) {
+    // A few bytes per loop so LoRa polling stays responsive.
+    for (int n = 0; n < 64 && Serial1.available() > 0; n++) {
         char c = (char)Serial1.read();
         if (c == '\r') {
             continue;
@@ -453,19 +454,25 @@ static void pollRadio() {
     if (!radioOk || radio == nullptr) {
         return;
     }
-    // DIO1 on this Tracker does not rise for TX_DONE. Do not trust it for RX
-    // either — a stuck-high pin cleared IRQs and left the radio deaf. Only the
-    // chip's SPI receive flags mean a packet is in the FIFO.
-    static uint32_t lastProbe = 0;
     static uint32_t lastListen = 0;
+    static uint32_t lastPa = 0;
     uint32_t now = millis();
-    if (now - lastProbe < 20) {
-        return;
+    // Keep the GC1109 in RX even if a send left TX_EN high.
+    if (now - lastPa > 1000) {
+        lastPa = now;
+        paReceive();
     }
-    lastProbe = now;
     uint32_t irq = radio->getIrqFlags();
     const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
-    if ((irq & rxBits) != 0) {
+    bool dio = digitalRead(kDio1) == HIGH;
+    // Phone watches DIO1. This board's TX_DONE pin is quiet, but RX_DONE can
+    // still raise it — accept either the pin or the SPI flag.
+    if ((irq & rxBits) != 0 || dio) {
+        size_t pending = radio->getPacketLength();
+        if (pending == 0 && (irq & rxBits) == 0) {
+            // Pin high with no payload yet — wait, do not restart RX.
+            return;
+        }
         takePacket();
         lastListen = now;
         return;
@@ -474,10 +481,8 @@ static void pollRadio() {
         lastListen = now;
         return;
     }
-    // Keep the GC1109 in receive; a send leaves TX_EN high if listen failed.
-    if (now - lastListen > 5000) {
+    if (now - lastListen > 8000) {
         lastListen = now;
-        paReceive();
         listen();
     }
 }
@@ -625,7 +630,7 @@ void setup() {
 }
 
 void loop() {
+    pollRadio();
     pollSerial();
     pollGps();
-    pollRadio();
 }

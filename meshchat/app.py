@@ -269,6 +269,18 @@ class App:
             font=ui_font(9),
         )
         self.status.pack(fill="x")
+        self.radio_log = tk.Label(
+            self.root,
+            text="Radio log: (waiting)",
+            bg=PANEL,
+            fg=MUTED,
+            anchor="w",
+            padx=12,
+            pady=2,
+            font=ui_font(8),
+        )
+        self.radio_log.pack(fill="x")
+        self._radio_lines: list[str] = []
 
     def _bind_wheel(self, widget: tk.Widget, target: tk.Canvas) -> None:
         def wheel(event: tk.Event) -> None:
@@ -630,9 +642,11 @@ class App:
             self.set_status(f"Tracker connected on {self.tracker.port_name}")
         elif op == "fw":
             self.tracker.firmware = str(event.get("version") or "")
+            self.note_radio(f"FW {self.tracker.firmware}")
             if self.status.cget("text").startswith("Radio is listening"):
                 self.set_status(self._listening_status())
         elif op == "radio":
+            self.note_radio(f"RADIO {event.get('detail')}")
             if event.get("ok"):
                 self.set_status(self._listening_status())
             else:
@@ -652,16 +666,22 @@ class App:
                 self.tracker.wanted_phone = phone
                 self._paint_number()
         elif op == "rx":
+            self.note_radio(
+                f"RX {event.get('sender')} -> {event.get('target')}: {event.get('text')}"
+            )
             self.on_rx(event)
         elif op == "heard":
             detail = str(event.get("detail") or "packet")
+            self.note_radio(f"HEARD {detail}")
             self.set_status(f"Tracker heard a radio packet ({detail})")
         elif op == "irq":
-            # From PING. Useful when the Tracker is connected but silent.
-            self.set_status(f"Radio status {event.get('detail')}")
+            detail = str(event.get("detail") or "")
+            self.note_radio(f"IRQ {detail}")
+            self.set_status(f"Radio status {detail}")
         elif op == "log":
             detail = str(event.get("detail") or "")
-            if detail.startswith("RX") or detail.startswith("HEARD"):
+            if detail.startswith(("RX", "HEARD", "IRQ", "RADIO", "FW")):
+                self.note_radio(detail)
                 self.set_status(f"Radio: {detail[:100]}")
         elif op == "tx":
             self.store.mark_tx(int(event["phone"]), int(event["id"]), bool(event.get("ok")))
@@ -812,6 +832,17 @@ class App:
         if self.tracker.firmware:
             text += f"  ·  firmware {self.tracker.firmware}"
         return text
+
+    def note_radio(self, line: str) -> None:
+        text = " ".join(str(line).split())
+        if not text:
+            return
+        self._radio_lines.append(text[:120])
+        self._radio_lines = self._radio_lines[-3:]
+        try:
+            self.radio_log.configure(text="Radio log: " + " | ".join(self._radio_lines), fg=INK)
+        except Exception:
+            pass
 
     def set_status(self, text: str) -> None:
         good = text.startswith("Tracker connected") or text.startswith("Radio is listening")
