@@ -536,6 +536,20 @@ static void handleLine(char *text) {
         reportGps();
         return;
     }
+    // No LoRa — only proves Mesh Chat can read USB lines from this Tracker.
+    if (strncmp(text, "ECHO ", 5) == 0) {
+        const char *body = text + 5;
+        while (*body == ' ') {
+            body++;
+        }
+        if (*body == '\0') {
+            body = "echo";
+        }
+        Serial.printf("RX 1 %lu 1 ", (unsigned long)kBroadcast);
+        Serial.println(body);
+        Serial.flush();
+        return;
+    }
     if (strcmp(text, "ID?") == 0) {
         replyId();
         return;

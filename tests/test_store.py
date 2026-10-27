@@ -69,7 +69,9 @@ class StoreTests(unittest.TestCase):
             app.root.update()
             self.assertEqual(app.current, 166800)
             self.assertEqual(app.title.cget("text"), "0x00028B90")
-            app.entry.insert("end", "hello")
+            app._entry_focus_in(None)
+            app.entry.delete(0, "end")
+            app.entry.insert(0, "hello")
             app.send()
             app.root.update()
             self.assertEqual(self.store.messages(166800)[0].body, "hello")
@@ -90,6 +92,24 @@ class StoreTests(unittest.TestCase):
         rows = self.store.messages(166800)
         self.assertEqual(rows[0].body, "from phone")
         self.assertEqual(rows[0].status, "received")
+
+    def test_direct_rx_is_also_copied_into_everyone(self) -> None:
+        from meshchat.app import App
+        from meshchat.gps_share import GpsShare
+        from meshchat.link import Tracker
+        from meshchat.protocol import BROADCAST
+
+        gps = GpsShare()
+        app = App(self.store, Tracker(port="COM199"), gps)
+        try:
+            self.store.set_phone(100001)
+            app.on_rx({"sender": 166800, "target": 100001, "id": 9, "text": "ping"})
+            app.root.update()
+            self.assertEqual(self.store.messages(166800)[0].body, "ping")
+            everyone = self.store.messages(BROADCAST)
+            self.assertTrue(any("ping" in row.body for row in everyone))
+        finally:
+            app.close()
 
     def test_phone_parser(self) -> None:
         self.assertEqual(parse_phone("0x00028B90"), 166800)

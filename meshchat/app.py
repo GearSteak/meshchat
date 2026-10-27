@@ -99,7 +99,7 @@ class App:
         self.refresh_contacts(BROADCAST)
         self.show_thread()
         self.tracker.start()
-        self.root.after(100, self.poll)
+        self._poll_job = self.root.after(100, self.poll)
 
     def _build(self) -> None:
         header = tk.Frame(self.root, bg=FIELD, padx=16, pady=12)
@@ -269,19 +269,23 @@ class App:
             font=ui_font(9),
         )
         self.status.pack(fill="x")
-        self.radio_log = tk.Label(
+        self.radio_log = tk.Text(
             self.root,
-            text="Radio log: (waiting for Tracker lines)",
+            height=5,
             bg=PANEL,
-            fg=MUTED,
-            anchor="w",
-            justify="left",
+            fg=INK,
+            relief="flat",
             padx=12,
             pady=4,
             font=ui_font(8),
+            wrap="word",
         )
         self.radio_log.pack(fill="x")
+        self.radio_log.insert("1.0", "Radio log: (waiting for Tracker lines)")
+        self.radio_log.configure(state="disabled")
         self._radio_lines: list[str] = []
+        self._serial_lines = 0
+        self._ui_rx_probed = False
 
     def _bind_wheel(self, widget: tk.Widget, target: tk.Canvas) -> None:
         def wheel(event: tk.Event) -> None:
@@ -629,7 +633,7 @@ class App:
             except Exception:
                 self.set_status("Mesh Chat skipped a bad radio update.")
         if self.root.winfo_exists():
-            self.root.after(100, self.poll)
+            self._poll_job = self.root.after(100, self.poll)
 
     def on_event(self, event: dict) -> None:
         op = event.get("op")
@@ -637,7 +641,9 @@ class App:
         # Every Tracker line belongs in the radio log. If this stays quiet while
         # a phone is transmitting, the USB reader never saw the line.
         if raw and op not in {"gps", "nmea"}:
+            self._serial_lines += 1
             self.note_radio(raw)
+            self._append_radio_file(raw)
         if op == "up":
             self.set_status(f"Tracker connected on {event.get('port', '')}")
         elif op == "down":
@@ -653,6 +659,7 @@ class App:
         elif op == "radio":
             if event.get("ok"):
                 self.set_status(self._listening_status())
+                self._probe_ui_receive()
             else:
                 self.set_status(f"Radio failed to start ({event.get('detail')})")
         elif op == "id":
@@ -676,14 +683,18 @@ class App:
             self.set_status(f"Tracker heard a radio packet ({detail})")
         elif op == "scan":
             detail = str(event.get("detail") or "")
-            self.set_status(f"Radio scan {detail}"[:120])
+            self.set_status(f"Radio scan {detail} · lines {self._serial_lines}"[:120])
         elif op == "irq":
             detail = str(event.get("detail") or "")
             self.set_status(f"Radio status {detail}")
         elif op == "log":
             detail = str(event.get("detail") or "")
+            # Firmware before ECHO support replies ERR unknown — still useful.
             if detail.startswith(("RX", "HEARD", "IRQ", "RADIO", "FW", "SCAN", "READY")):
                 self.set_status(f"Radio: {detail[:100]}")
+            # If RX fields failed to parse, still force the text into Everyone.
+            if detail.startswith("RX "):
+                self._force_rx_from_raw(detail)
         elif op == "tx":
             self.store.mark_tx(int(event["phone"]), int(event["id"]), bool(event.get("ok")))
             if self.current == int(event["phone"]):
@@ -707,6 +718,47 @@ class App:
                 detail = "The Tracker could not send that message."
             self.set_status(detail)
 
+    def _probe_ui_receive(self) -> None:
+        """Put a fake message in Everyone without USB/LoRa — proves the chat UI."""
+        if self._ui_rx_probed:
+            return
+        self._ui_rx_probed = True
+        self.on_rx(
+            {
+                "sender": 1,
+                "target": BROADCAST,
+                "id": 1,
+                "text": "meshchat-ui-ok",
+            }
+        )
+
+    def _force_rx_from_raw(self, detail: str) -> None:
+        parts = detail.split(" ")
+        if len(parts) < 4:
+            return
+        try:
+            sender = int(parts[1])
+            target = int(parts[2])
+            msg_id = int(parts[3])
+        except ValueError:
+            return
+        self.on_rx(
+            {
+                "sender": sender,
+                "target": target,
+                "id": msg_id,
+                "text": " ".join(parts[4:]),
+            }
+        )
+
+    def _append_radio_file(self, line: str) -> None:
+        try:
+            path = os.path.join(data_dir(), "radio.log")
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except OSError:
+            pass
+
     def on_rx(self, event: dict) -> None:
         sender = int(event["sender"])
         target = int(event["target"])
@@ -724,13 +776,18 @@ class App:
         self.store.ensure_contact(sender)
         if peer != BROADCAST:
             self.store.ensure_contact(peer)
-        self.store.add_message(peer, sender, target, text, "received", int(event["id"]))
-        # Always jump to the thread that owns this packet so a direct message is
-        # not sitting unread while Everyone is still on screen.
-        self.refresh_contacts(peer)
+        msg_id = int(event["id"])
+        self.store.add_message(peer, sender, target, text, "received", msg_id)
+        # Also copy every direct message into Everyone so a DM is never sitting
+        # on another contact while Everyone looks empty.
+        if peer != BROADCAST:
+            shown = f"{format_phone(sender)}: {text}" if text else format_phone(sender)
+            self.store.add_message(BROADCAST, sender, target, shown, "received", msg_id)
+        # Jump to Everyone for broadcasts/probes; otherwise open the sender chat.
+        self.refresh_contacts(BROADCAST if peer == BROADCAST else peer)
         self.show_thread()
         where = "Everyone" if peer == BROADCAST else format_phone(sender)
-        self.set_status(f"Message from {format_phone(sender)} → {where}")
+        self.set_status(f"Message from {format_phone(sender)} → {where} · lines {self._serial_lines}")
 
     def on_gps(self, event: dict) -> None:
         fix = int(event.get("fix") or 0)
@@ -850,9 +907,12 @@ class App:
         if self._radio_lines and self._radio_lines[-1] == text[:160]:
             return
         self._radio_lines.append(text[:160])
-        self._radio_lines = self._radio_lines[-6:]
+        self._radio_lines = self._radio_lines[-8:]
         try:
-            self.radio_log.configure(text="Radio log:\n" + "\n".join(self._radio_lines), fg=INK)
+            self.radio_log.configure(state="normal")
+            self.radio_log.delete("1.0", "end")
+            self.radio_log.insert("1.0", "Radio log:\n" + "\n".join(self._radio_lines))
+            self.radio_log.configure(state="disabled")
         except Exception:
             pass
 
@@ -861,6 +921,13 @@ class App:
         self.status.configure(text=text, fg=ACCENT if good else MUTED)
 
     def close(self) -> None:
+        job = getattr(self, "_poll_job", None)
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+            self._poll_job = None
         self.tracker.stop()
         self.gps.stop()
         self.store.close()

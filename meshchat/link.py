@@ -176,7 +176,11 @@ class Tracker:
                 self._ser.write(data)
                 self._ser.flush()
                 return True
-            except (serial.SerialException, OSError, TimeoutError, TypeError, ValueError):
+            except TimeoutError:
+                # A slow flush must not tear down the reader. Closing here made
+                # Mesh Chat look like it could send while going deaf on receive.
+                return False
+            except (serial.SerialException, OSError, TypeError, ValueError):
                 # A Tracker reboot mid-write raises OSError on Linux, not only
                 # SerialException. That used to escape and kill the window.
                 try:
@@ -217,6 +221,9 @@ class Tracker:
                 self.write(f"ID {self.wanted_phone}")
             else:
                 self.write("ID?")
+            # Ask the Tracker to fake an RX over USB only. If Mesh Chat shows
+            # that bubble, the client receive path works and LoRa is the gap.
+            self.write("ECHO meshchat-usb-ok")
             while not self._stop.is_set():
                 try:
                     waiting = ser.in_waiting
