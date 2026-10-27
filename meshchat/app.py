@@ -153,6 +153,22 @@ class App:
             font=ui_font(11, True),
         )
         self.update_btn.pack(side="right")
+        self.radio_btn = tk.Button(
+            header,
+            text="Radio log",
+            command=self.open_radio_log,
+            bg=MINE,
+            fg=MINE_INK,
+            activebackground="#0066d6",
+            activeforeground=MINE_INK,
+            relief="flat",
+            padx=10,
+            pady=4,
+            font=ui_font(11, True),
+        )
+        self.radio_btn.pack(side="right", padx=(0, 6))
+        self._radio_win: tk.Toplevel | None = None
+        self._radio_win_text: tk.Text | None = None
         self.gps_label = tk.Label(header, text="GPS off", bg=FIELD, fg=MUTED, font=ui_font(10))
         self.gps_label.pack(side="right", padx=8)
         self._paint_number()
@@ -958,6 +974,107 @@ class App:
             text += f"  ·  firmware {self.tracker.firmware}"
         return text
 
+    def open_radio_log(self) -> None:
+        """Big obvious window for Tracker USB lines — this is what to watch on phone TX."""
+        path = os.path.join(data_dir(), "radio.log")
+        if self._radio_win is not None:
+            try:
+                if self._radio_win.winfo_exists():
+                    self._radio_win.lift()
+                    self._radio_win.focus_force()
+                    self._fill_radio_window()
+                    return
+            except Exception:
+                self._radio_win = None
+                self._radio_win_text = None
+        win = tk.Toplevel(self.root)
+        win.title("Tracker radio log")
+        win.geometry("720x480")
+        win.configure(bg=PANEL)
+        self._radio_win = win
+        tk.Label(
+            win,
+            text="Live lines from the Tracker. Send from a phone and watch for AIR, RX, or HEARD.",
+            bg=PANEL,
+            fg=INK,
+            anchor="w",
+            padx=12,
+            pady=8,
+            font=ui_font(11, True),
+        ).pack(fill="x")
+        tk.Label(
+            win,
+            text=f"Also saved to: {path}",
+            bg=PANEL,
+            fg=MUTED,
+            anchor="w",
+            padx=12,
+            font=ui_font(9),
+        ).pack(fill="x")
+        text = tk.Text(win, bg="#111", fg="#f2f2f2", font=ui_font(11), wrap="word", relief="flat", padx=10, pady=10)
+        text.pack(fill="both", expand=True, padx=8, pady=8)
+        self._radio_win_text = text
+        bar = tk.Frame(win, bg=PANEL)
+        bar.pack(fill="x", padx=8, pady=(0, 8))
+        tk.Button(
+            bar,
+            text="Refresh from file",
+            command=self._fill_radio_window,
+            bg=FIELD,
+            fg=MINE,
+            relief="flat",
+            padx=10,
+            pady=6,
+            font=ui_font(10, True),
+        ).pack(side="left")
+        tk.Button(
+            bar,
+            text="Close",
+            command=win.destroy,
+            bg=FIELD,
+            fg=INK,
+            relief="flat",
+            padx=10,
+            pady=6,
+            font=ui_font(10),
+        ).pack(side="right")
+
+        def _close() -> None:
+            self._radio_win = None
+            self._radio_win_text = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _close)
+        self._fill_radio_window()
+
+    def _fill_radio_window(self) -> None:
+        widget = self._radio_win_text
+        if widget is None:
+            return
+        path = os.path.join(data_dir(), "radio.log")
+        chunks: list[str] = []
+        if self._radio_lines:
+            chunks.append("— live —")
+            chunks.extend(self._radio_lines)
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                file_lines = [ln.rstrip("\n") for ln in handle.readlines()[-80:]]
+            if file_lines:
+                chunks.append("— radio.log —")
+                chunks.extend(file_lines)
+        except OSError:
+            if not chunks:
+                chunks.append("(no Tracker lines yet — is the Tracker plugged in?)")
+        body = "\n".join(chunks) if chunks else "(empty)"
+        try:
+            widget.configure(state="normal")
+            widget.delete("1.0", "end")
+            widget.insert("1.0", body)
+            widget.see("end")
+            widget.configure(state="disabled")
+        except Exception:
+            pass
+
     def note_radio(self, line: str) -> None:
         text = " ".join(str(line).split())
         if not text:
@@ -965,17 +1082,17 @@ class App:
         if self._radio_lines and self._radio_lines[-1] == text[:160]:
             return
         self._radio_lines.append(text[:160])
-        self._radio_lines = self._radio_lines[-12:]
+        self._radio_lines = self._radio_lines[-40:]
         try:
             self.radio_log.configure(state="normal")
             self.radio_log.delete("1.0", "end")
-            self.radio_log.insert("1.0", "\n".join(self._radio_lines))
+            self.radio_log.insert("1.0", "\n".join(self._radio_lines[-12:]))
             self.radio_log.see("end")
             self.radio_log.configure(state="disabled")
         except Exception:
             pass
-        # Mirror important Tracker lines into the status bar so the log is not
-        # the only place to notice a phone transmission.
+        if self._radio_win_text is not None:
+            self._fill_radio_window()
         if text.startswith(("SCAN", "AIR", "RX", "HEARD", "IRQ", "FW", "TUNE", "RADIO")):
             self.status.configure(text=f"Tracker: {text[:110]}", fg=ACCENT if text.startswith(("RX", "AIR", "HEARD")) else MUTED)
 
