@@ -90,13 +90,17 @@ def flash_argv(port: str, dist: Path) -> list[str]:
 def update_tracker(root: Path) -> str:
     _ensure_esptool()
     dist = firmware_dir(root)
+    version = bundled_version(root) or "?"
     ports = tracker_port_names()
     if not ports:
-        return "The Tracker is not plugged in, so its firmware was not updated."
+        raise RuntimeError(
+            "The Tracker USB port was not found, so firmware "
+            f"{version} was not written. Unplug it, plug it back in, and press Update."
+        )
     _enter_bootloader(ports[0])
     boot_port = _wait_for_bootloader()
-    _run(flash_argv(boot_port, dist))
-    return "Tracker firmware updated."
+    _run(flash_argv(boot_port, dist), timeout=180)
+    return f"Tracker firmware {version} was written to the board."
 
 
 def _enter_bootloader(port: str) -> None:

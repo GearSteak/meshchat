@@ -6,12 +6,13 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
 from tkinter import messagebox, simpledialog
 
-from meshchat.flash import bundled_version, firmware_needs_update, update_tracker
+from meshchat.flash import bundled_version, update_tracker
 from meshchat.gps_share import GpsShare
 from meshchat.link import Tracker, tracker_port
 from meshchat.protocol import BROADCAST, MAX_TEXT
@@ -830,28 +831,36 @@ class App:
 
     def _offer_update(self, status) -> None:
         plugged = tracker_port() is not None
-        firmware = firmware_needs_update(self.tracker.firmware, bundled_version(install_root()), plugged)
         refresh_app = status.available
-        flash = firmware or (refresh_app and plugged)
+        bundled = bundled_version(install_root()) or "?"
+        running_fw = self.tracker.firmware or "unknown"
+        # Always re-flash when the Tracker is plugged in. Matching version
+        # strings used to skip the write even when the board never got the bin.
+        flash = plugged
         if not refresh_app and not flash:
             self._restore_update_button()
-            if plugged:
-                text = "Mesh Chat and the Tracker are up to date."
-            else:
-                text = "Mesh Chat is up to date. Plug the Tracker in and press Update to refresh its firmware."
-            messagebox.showinfo("Update", text, parent=self.root)
+            messagebox.showinfo(
+                "Update",
+                "Mesh Chat is up to date. Plug the Tracker in and press Update "
+                f"to flash firmware {bundled} onto it.",
+                parent=self.root,
+            )
             return
         if refresh_app and flash:
-            question = "Install the latest Mesh Chat and update the Tracker?"
+            question = (
+                f"Install the latest Mesh Chat and flash Tracker firmware {bundled}?\n"
+                f"Tracker is reporting firmware {running_fw} right now."
+            )
         elif flash:
             question = (
-                "Mesh Chat is already the latest copy. "
-                "Update the Tracker firmware? The Tracker will restart."
+                f"Mesh Chat is already current. Re-flash Tracker firmware {bundled}?\n"
+                f"Tracker is reporting firmware {running_fw} right now. "
+                "The Tracker will restart."
             )
         else:
             question = (
-                "A newer Mesh Chat is on GitHub. Install it and restart? "
-                "The Tracker is not plugged in, so its firmware will not be updated."
+                "A newer Mesh Chat is on GitHub. Install it and restart?\n"
+                "The Tracker is not plugged in, so its firmware will not be written."
             )
         if not messagebox.askyesno("Update", question, parent=self.root):
             self._restore_update_button()
@@ -868,13 +877,16 @@ class App:
 
     def _install_update(self, sha: str, flash: bool) -> None:
         self.tracker.stop()
+        time.sleep(0.8)
         try:
             if sha:
                 install_update(install_root(), sha, on_status=self._install_status)
             note = ""
             if flash:
-                self._install_status("Updating Tracker")
+                self._install_status("Flashing Tracker")
                 note = update_tracker(install_root())
+            elif tracker_port() is None:
+                note = "Tracker was not plugged in — firmware was not written."
         except Exception as exc:
             self._jobs.put(lambda detail=str(exc): self._update_failed(detail))
             return

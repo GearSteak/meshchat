@@ -15,6 +15,7 @@ class FlashTests(unittest.TestCase):
         self.assertEqual(tracker_port_names(ports), ["COM8"])
 
     def test_firmware_updates_when_the_tracker_version_differs(self) -> None:
+        # Kept for the helper; Update itself always re-flashes when plugged in.
         self.assertTrue(firmware_needs_update("", "1", True))
         self.assertTrue(firmware_needs_update("0", "1", True))
         self.assertFalse(firmware_needs_update("1", "1", True))
