@@ -631,6 +631,12 @@ class App:
                 self._paint_number()
         elif op == "rx":
             self.on_rx(event)
+        elif op == "heard":
+            detail = str(event.get("detail") or "packet")
+            self.set_status(f"Tracker heard a radio packet ({detail})")
+        elif op == "irq":
+            # From PING. Useful when the Tracker is connected but silent.
+            self.set_status(f"Radio status {event.get('detail')}")
         elif op == "tx":
             self.store.mark_tx(int(event["phone"]), int(event["id"]), bool(event.get("ok")))
             if self.current == int(event["phone"]):

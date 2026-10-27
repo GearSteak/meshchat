@@ -246,11 +246,12 @@ static bool beginRadio() {
         mod = new Module(hal, kCs, kDio1, kReset, kBusy);
         radio = new SX1262(mod);
     }
-    float beginFreq = freqMhz;
-    if (!prefs.isKey("freq")) {
-        beginFreq = kPhoneBeginFreq;
+    // Always the same begin() the phone uses. A saved 906.875 MHz would put
+    // this board on a real channel while the phone stays on the unset register.
+    if (prefs.isKey("freq")) {
+        prefs.remove("freq");
     }
-    int state = radio->begin(beginFreq, kBandwidth, kSpread, kCoding, kSync, kPower, kPreamble, kTcxo, false);
+    int state = radio->begin(kPhoneBeginFreq, kBandwidth, kSpread, kCoding, kSync, kPower, kPreamble, kTcxo, false);
     if (state == RADIOLIB_ERR_CHIP_NOT_FOUND || state == RADIOLIB_ERR_SPI_CMD_FAILED) {
         radioOk = false;
         return false;
@@ -267,11 +268,15 @@ static bool listen() {
     if (radio == nullptr) {
         return false;
     }
+    // Amp first, then the modem. Meshtastic does the same for the GC1109.
+    paReceive();
+    delay(10);
+    radio->standby();
     paReceive();
     delay(5);
     int state = radio->startReceive();
     if (state != RADIOLIB_ERR_NONE) {
-        delay(5);
+        delay(20);
         paReceive();
         state = radio->startReceive();
     }
@@ -398,6 +403,7 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
         return;
     }
     if (kind != kTypeMessage || packetLen < 15) {
+        Serial.printf("HEARD %u bad-type\n", (unsigned)packetLen);
         return;
     }
     // The number we send as is not a reason to hide a packet. Replies often
@@ -406,6 +412,7 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
                          ((uint32_t)packet[11] << 8) | packet[12];
     uint16_t textLen = ((uint16_t)packet[13] << 8) | packet[14];
     if (textLen == 0 || textLen > kMaxText || (size_t)(15 + textLen) > packetLen) {
+        Serial.printf("HEARD %u bad-len\n", (unsigned)packetLen);
         return;
     }
     if (alreadySaw(sender, messageId)) {
@@ -420,6 +427,7 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
         Serial.write(c);
     }
     Serial.println();
+    Serial.flush();
     blink();
     if (target == phone) {
         sendDelivered(sender);
@@ -430,13 +438,16 @@ static void takePacket() {
     delayMicroseconds(500);
     size_t packetLen = radio->getPacketLength();
     if (packetLen == 0 || packetLen > 255) {
-        radio->clearIrqFlags(RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR);
+        Serial.println("HEARD 0 empty");
+        listen();
         return;
     }
     uint8_t packet[256];
     int state = radio->readData(packet, packetLen);
     if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_ERR_CRC_MISMATCH) {
         onPacket(packet, packetLen);
+    } else {
+        Serial.printf("HEARD %u read-%d\n", (unsigned)packetLen, (int)state);
     }
     listen();
 }
@@ -445,39 +456,33 @@ static void pollRadio() {
     if (!radioOk || radio == nullptr) {
         return;
     }
-    // The phone reads a packet when DIO1 goes high. This Tracker often leaves
-    // that pin low, so the chip's own receive flag counts too. Everyone and a
-    // direct chat use this same read.
+    // DIO1 on this Tracker does not rise for TX_DONE. Do not trust it for RX
+    // either — a stuck-high pin cleared IRQs and left the radio deaf. Only the
+    // chip's SPI receive flags mean a packet is in the FIFO.
     static uint32_t lastProbe = 0;
     static uint32_t lastListen = 0;
-    static size_t heldLen = 0;
     uint32_t now = millis();
-    bool dio = digitalRead(kDio1) == HIGH;
-    if (!dio && now - lastProbe < 40) {
+    if (now - lastProbe < 20) {
         return;
     }
     lastProbe = now;
     uint32_t irq = radio->getIrqFlags();
     const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
-    bool arrived = dio || (irq & rxBits) != 0;
-    if (!arrived) {
-        if ((irq & (RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED)) != 0) {
-            lastListen = now;
-            return;
-        }
-        if (now - lastListen > 10000) {
-            lastListen = now;
-            listen();
-        }
+    if ((irq & rxBits) != 0) {
+        takePacket();
+        lastListen = now;
         return;
     }
-    size_t pending = radio->getPacketLength();
-    if (!((irq & rxBits) != 0) && heldLen != 0 && pending == heldLen) {
+    if ((irq & (RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED)) != 0) {
+        lastListen = now;
         return;
     }
-    takePacket();
-    heldLen = pending;
-    lastListen = now;
+    // Keep the GC1109 in receive; a send leaves TX_EN high if listen failed.
+    if (now - lastListen > 5000) {
+        lastListen = now;
+        paReceive();
+        listen();
+    }
 }
 
 #ifndef MESHCHAT_FW
@@ -504,6 +509,12 @@ static void handleLine(char *text) {
         Serial.printf("RADIO %s\n", radioOk ? "ok" : "fail");
         reportFirmware();
         replyId();
+        if (radio != nullptr) {
+            Serial.printf("IRQ %lu DIO %d PA %d\n",
+                          (unsigned long)radio->getIrqFlags(),
+                          digitalRead(kDio1),
+                          digitalRead(kPaTx));
+        }
         reportGps();
         return;
     }

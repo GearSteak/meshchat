@@ -38,6 +38,7 @@ class LineTests(unittest.TestCase):
         self.assertEqual(parse_line("ID 100001")["phone"], 100001)
         self.assertEqual(parse_line("PONG")["op"], "pong")
         self.assertEqual(parse_line("FW 1")["version"], "1")
+        self.assertEqual(parse_line("HEARD 15 bad-len")["op"], "heard")
 
     def test_open_does_not_reset_the_tracker(self) -> None:
         opened = {}
