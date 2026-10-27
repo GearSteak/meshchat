@@ -153,7 +153,7 @@ class App:
             font=ui_font(11, True),
         )
         self.update_btn.pack(side="right")
-        self.gps_label = tk.Label(header, text="GPS searching", bg=FIELD, fg=MUTED, font=ui_font(10))
+        self.gps_label = tk.Label(header, text="GPS off", bg=FIELD, fg=MUTED, font=ui_font(10))
         self.gps_label.pack(side="right", padx=8)
         self._paint_number()
         tk.Frame(self.root, bg=LINE, height=1).pack(fill="x")
@@ -801,7 +801,10 @@ class App:
             self.gps_label.configure(text=f"{lat:.5f}, {lon:.5f}", fg=ACCENT)
         else:
             self.gps.update_fix(0, sats)
-            looking = f"GPS searching ({sats})" if sats else "GPS searching"
+            if sats:
+                looking = f"GPS searching ({sats})"
+            else:
+                looking = "GPS off"
             self.gps_label.configure(text=looking, fg=MUTED)
 
     def open_map(self) -> None:

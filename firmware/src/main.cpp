@@ -179,42 +179,17 @@ static void handleNmea(char *sentence) {
 }
 
 static void pollGps() {
-    // A few bytes per loop so LoRa polling stays responsive.
-    for (int n = 0; n < 64 && Serial1.available() > 0; n++) {
-        char c = (char)Serial1.read();
-        if (c == '\r') {
-            continue;
-        }
-        if (c == '\n') {
-            gpsLine[gpsLen] = '\0';
-            if (gpsLen > 6) {
-                handleNmea(gpsLine);
-            }
-            gpsLen = 0;
-            continue;
-        }
-        if (gpsLen + 1 < sizeof(gpsLine)) {
-            gpsLine[gpsLen++] = c;
-        } else {
-            gpsLen = 0;
-        }
-    }
+    // GPS is powered down while we chase LoRa receive. Do not touch Serial1.
 }
 
 static void startGps() {
+    // VEXT feeds the GPS module and its LNA. Leaving that on flooded the MCU
+    // with NMEA and raised the noise floor next to the LoRa antenna — send
+    // still worked, receive did not. Keep GPS off until chat RX is solid.
     pinMode(kVext, OUTPUT);
-    digitalWrite(kVext, HIGH);
+    digitalWrite(kVext, LOW);
     pinMode(kGpsReset, OUTPUT);
     digitalWrite(kGpsReset, LOW);
-    delay(20);
-    digitalWrite(kGpsReset, HIGH);
-    delay(100);
-    Serial1.begin(115200, SERIAL_8N1, kGpsRx, kGpsTx);
-    Serial1.print("$CFGSYS,h35155\r\n");
-    Serial1.print("$CFGMSG,0,3,0\r\n");
-    Serial1.print("$CFGMSG,0,2,0\r\n");
-    Serial1.print("$CFGMSG,6,0,0\r\n");
-    Serial1.print("$CFGMSG,6,1,0\r\n");
 }
 
 static void paReceive() {
@@ -625,7 +600,7 @@ static void handleLine(char *text) {
                           digitalRead(kPaTx),
                           digitalRead(kPaCtx));
         }
-        reportGps();
+        Serial.println("GPS off");
         return;
     }
     // No LoRa — only proves Mesh Chat can read USB lines from this Tracker.

@@ -116,6 +116,8 @@ def parse_line(line: str) -> dict | None:
         return {"op": "freq", "detail": " ".join(parts[1:]), "raw": text}
     if op == "READY":
         return {"op": "log", "detail": text, "raw": text}
+    if op == "GPS" and len(parts) >= 2 and parts[1] == "off":
+        return {"op": "gps", "fix": 0, "sats": 0, "raw": text}
     if op == "GPS" and len(parts) >= 2 and parts[1] == "none":
         sats = int(parts[2]) if len(parts) >= 3 and parts[2].isdigit() else 0
         return {"op": "gps", "fix": 0, "sats": sats, "raw": text}
