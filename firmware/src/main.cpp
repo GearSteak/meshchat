@@ -269,10 +269,7 @@ static bool listen() {
     if (radio == nullptr) {
         return false;
     }
-    // Amp first, then the modem. Meshtastic does the same for the GC1109.
-    paReceive();
-    delay(10);
-    radio->standby();
+    // Amp first, then the modem — same order as Meshtastic on this board.
     paReceive();
     delay(5);
     int state = radio->startReceive();
@@ -433,6 +430,7 @@ static void onPacket(uint8_t *packet, size_t packetLen) {
 }
 
 static void takePacket() {
+    // Same read path as the T9 LoRaComm.cpp once a packet is signaled.
     delayMicroseconds(500);
     size_t packetLen = radio->getPacketLength();
     if (packetLen == 0 || packetLen > 255) {
@@ -456,35 +454,38 @@ static void pollRadio() {
     }
     static uint32_t lastListen = 0;
     static uint32_t lastPa = 0;
+    static uint32_t lastSpi = 0;
     uint32_t now = millis();
-    // Keep the GC1109 in RX even if a send left TX_EN high.
-    if (now - lastPa > 1000) {
+
+    if (now - lastPa > 2000) {
         lastPa = now;
         paReceive();
     }
-    uint32_t irq = radio->getIrqFlags();
-    const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR;
+
+    // The phones only GPIO-poll DIO1 while listening. Hitting the chip over
+    // SPI every loop (getIrqFlags) during RX was breaking reception.
     bool dio = digitalRead(kDio1) == HIGH;
-    // Phone watches DIO1. This board's TX_DONE pin is quiet, but RX_DONE can
-    // still raise it — accept either the pin or the SPI flag.
-    if ((irq & rxBits) != 0 || dio) {
-        size_t pending = radio->getPacketLength();
-        if (pending == 0 && (irq & rxBits) == 0) {
-            // Pin high with no payload yet — wait, do not restart RX.
+    bool arrived = dio;
+    if (!arrived && now - lastSpi > 100) {
+        lastSpi = now;
+        uint32_t irq = radio->getIrqFlags();
+        arrived = (irq & (RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR)) != 0;
+        if (!arrived &&
+            (irq & (RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED)) != 0) {
+            lastListen = now;
             return;
         }
-        takePacket();
-        lastListen = now;
+    }
+    if (!arrived) {
+        if (now - lastListen > 10000) {
+            lastListen = now;
+            listen();
+        }
         return;
     }
-    if ((irq & (RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED)) != 0) {
-        lastListen = now;
-        return;
-    }
-    if (now - lastListen > 8000) {
-        lastListen = now;
-        listen();
-    }
+
+    takePacket();
+    lastListen = now;
 }
 
 #ifndef MESHCHAT_FW
