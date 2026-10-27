@@ -471,6 +471,7 @@ static void takePacket() {
     delayMicroseconds(500);
     size_t packetLen = radio->getPacketLength(true);
     if (packetLen == 0 || packetLen > 255) {
+        Serial.printf("HEARD empty len=%u\n", (unsigned)packetLen);
         radio->clearIrqStatus();
         listen();
         return;
@@ -490,14 +491,14 @@ static void pollRadio() {
     if (!radioOk || radio == nullptr) {
         return;
     }
-    static uint32_t lastListen = 0;
     static uint32_t lastPa = 0;
-    static uint32_t lastSpi = 0;
     static uint32_t lastScan = 0;
-    static uint32_t lastStuck = 0;
+    static uint32_t lastListen = 0;
     uint32_t now = millis();
 
-    if (now - lastPa > 2000) {
+    // GPIO-only amp refresh. Never SPI-touch the modem while it is listening;
+    // getIrqFlags/getRSSI mid-SF12 was aborting phone packets before RX_DONE.
+    if (now - lastPa > 5000) {
         lastPa = now;
         paReceive();
     }
@@ -505,68 +506,51 @@ static void pollRadio() {
     bool flagged = dioPacket;
     dioPacket = false;
     bool dio = digitalRead(kDio1) == HIGH;
-    // Prefer the DIO edge. Only touch SPI when the pin says so, or slowly as
-    // a backup — constant getIrqFlags during RX kills reception on SX1262.
     if (!flagged && !dio) {
-        if (now - lastSpi < 250) {
-            if (now - lastScan > 5000) {
-                lastScan = now;
-                lastSpi = now;
-                uint32_t irq = radio->getIrqFlags();
-                Serial.printf("SCAN irq=%lu dio=%d txen=%d ctx=%d rssi=%.1f\n",
-                              (unsigned long)irq,
-                              digitalRead(kDio1),
-                              digitalRead(kPaTx),
-                              digitalRead(kPaCtx),
-                              radio->getRSSI(false));
-            }
-            if (now - lastListen > 20000) {
-                lastListen = now;
-                listen();
-            }
-            return;
+        if (now - lastScan > 5000) {
+            lastScan = now;
+            Serial.printf("SCAN dio=%d txen=%d ctx=%d\n",
+                          digitalRead(kDio1),
+                          digitalRead(kPaTx),
+                          digitalRead(kPaCtx));
         }
-        lastSpi = now;
+        // Rare clean restart only when fully idle — not every few seconds.
+        if (now - lastListen > 120000) {
+            lastListen = now;
+            listen();
+        }
+        return;
     }
 
-    uint32_t irq = radio->getIrqFlags();
+    // DIO1 rose (or stuck high). Wait for RX_DONE without clearing preamble /
+    // header flags — those are normal mid-packet and clearing them + SPI
+    // thrashing was leaving us deaf while TX still worked.
     const uint32_t rxBits = RADIOLIB_SX126X_IRQ_RX_DONE | RADIOLIB_SX126X_IRQ_CRC_ERR |
                             RADIOLIB_SX126X_IRQ_HEADER_ERR;
-    const uint32_t noisyBits =
-        RADIOLIB_SX126X_IRQ_HEADER_VALID | RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED;
-
-    if (now - lastScan > 5000) {
-        lastScan = now;
-        Serial.printf("SCAN irq=%lu dio=%d txen=%d ctx=%d rssi=%.1f\n",
-                      (unsigned long)irq,
-                      digitalRead(kDio1),
-                      digitalRead(kPaTx),
-                      digitalRead(kPaCtx),
-                      radio->getRSSI(false));
+    uint32_t irq = 0;
+    uint32_t deadline = millis() + 8000;
+    while (millis() < deadline) {
+        irq = radio->getIrqFlags();
+        if ((irq & rxBits) != 0) {
+            break;
+        }
+        if (digitalRead(kDio1) == LOW && !dioPacket) {
+            // Edge without a finish — false alarm; stay in RX.
+            return;
+        }
+        delay(5);
     }
 
+    Serial.printf("IRQ %lu dio=%d\n", (unsigned long)irq, digitalRead(kDio1));
     if ((irq & rxBits) != 0) {
         takePacket();
-        lastListen = now;
+        lastListen = millis();
         return;
     }
-    // Meshtastic: sticky preamble bits alone must be cleared or the poll loop
-    // never settles and never restarts a clean RX window.
-    if ((irq & noisyBits) != 0 && (irq & rxBits) == 0) {
-        radio->clearIrqFlags(noisyBits);
-        lastListen = now;
-        return;
-    }
-    if (dio && (now - lastStuck > 3000)) {
-        lastStuck = now;
-        radio->clearIrqStatus();
-        listen();
-        return;
-    }
-    if (now - lastListen > 20000) {
-        lastListen = now;
-        listen();
-    }
+    // Sticky DIO with no completion — clear and re-arm once.
+    radio->clearIrqStatus();
+    listen();
+    lastListen = millis();
 }
 
 #ifndef MESHCHAT_FW
@@ -594,11 +578,12 @@ static void handleLine(char *text) {
         reportFirmware();
         replyId();
         if (radio != nullptr) {
-            Serial.printf("IRQ %lu DIO %d TXEN %d CTX %d\n",
-                          (unsigned long)radio->getIrqFlags(),
+            // GPIO-only on PING — do not SPI-read IRQ/RSSI here or we glitch RX.
+            Serial.printf("DIO %d TXEN %d CTX %d\n",
                           digitalRead(kDio1),
                           digitalRead(kPaTx),
                           digitalRead(kPaCtx));
+            Serial.printf("TUNE %.3f\n", freqMhz);
         }
         Serial.println("GPS off");
         return;

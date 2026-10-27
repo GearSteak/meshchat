@@ -37,6 +37,12 @@ class LineTests(unittest.TestCase):
         searching = parse_line("GPS none 4")
         self.assertEqual(searching["fix"], 0)
         self.assertEqual(searching["sats"], 4)
+        off = parse_line("GPS off")
+        self.assertEqual(off["fix"], 0)
+        self.assertEqual(off["sats"], 0)
+        usb = parse_line("RX 1 4294967295 1 meshchat-usb-ok")
+        self.assertEqual(usb["op"], "rx")
+        self.assertEqual(usb["text"], "meshchat-usb-ok")
         sentence = "$GNRMC,123519,A,4807.038,N,01131.000,E,022.4,084.4,230394,003.1,W*6A"
         nmea = parse_line("NMEA " + sentence)
         self.assertEqual(nmea["sentence"], sentence)

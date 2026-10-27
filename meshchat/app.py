@@ -787,6 +787,9 @@ class App:
         # Jump to Everyone for broadcasts/probes; otherwise open the sender chat.
         self.refresh_contacts(BROADCAST if peer == BROADCAST else peer)
         self.show_thread()
+        if text == "meshchat-usb-ok":
+            self.set_status("USB→chat ok (meshchat-usb-ok). LoRa RX is the remaining gap.")
+            return
         where = "Everyone" if peer == BROADCAST else format_phone(sender)
         self.set_status(f"Message from {format_phone(sender)} → {where} · lines {self._serial_lines}")
 
