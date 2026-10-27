@@ -87,8 +87,8 @@ class App:
         self.current: int | None = None
         self.root = tk.Tk()
         self.root.title(f"Mesh Chat {running_revision()}")
-        self.root.geometry("980x700")
-        self.root.minsize(760, 520)
+        self.root.geometry("980x760")
+        self.root.minsize(760, 640)
         self._thread_width = 0
         self._jobs: queue.Queue = queue.Queue()
         self._contact_rows: dict[int, tk.Frame] = {}
@@ -272,19 +272,56 @@ class App:
             font=ui_font(9),
         )
         self.status.pack(fill="x")
-        self.radio_log = tk.Text(
-            self.root,
-            height=5,
+        # Bottom strip — this is the radio log. When a phone sends, new lines
+        # should appear here (SCAN / AIR / RX / HEARD). If it stays quiet, the
+        # Tracker never printed anything over USB.
+        radio_wrap = tk.Frame(self.root, bg=LINE)
+        radio_wrap.pack(fill="x", side="bottom")
+        radio_head = tk.Frame(radio_wrap, bg=PANEL)
+        radio_head.pack(fill="x")
+        tk.Label(
+            radio_head,
+            text="Tracker radio log  (bottom of this window)",
             bg=PANEL,
             fg=INK,
-            relief="flat",
+            anchor="w",
             padx=12,
             pady=4,
+            font=ui_font(10, True),
+        ).pack(side="left")
+        self.radio_path_label = tk.Label(
+            radio_head,
+            text="",
+            bg=PANEL,
+            fg=MUTED,
+            anchor="e",
+            padx=12,
             font=ui_font(8),
+        )
+        self.radio_path_label.pack(side="right")
+        try:
+            self.radio_path_label.configure(text=os.path.join(data_dir(), "radio.log"))
+        except Exception:
+            pass
+        self.radio_log = tk.Text(
+            radio_wrap,
+            height=7,
+            bg="#1a1a1a",
+            fg="#e8e8e8",
+            insertbackground="#e8e8e8",
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=ui_font(10),
             wrap="word",
         )
         self.radio_log.pack(fill="x")
-        self.radio_log.insert("1.0", "Radio log: (waiting for Tracker lines)")
+        self.radio_log.insert(
+            "1.0",
+            "Waiting for Tracker USB lines…\n"
+            "After Update you should see FW / SCAN here.\n"
+            "Send from a phone — look for AIR, RX, or HEARD.",
+        )
         self.radio_log.configure(state="disabled")
         self._radio_lines: list[str] = []
         self._serial_lines = 0
@@ -928,14 +965,19 @@ class App:
         if self._radio_lines and self._radio_lines[-1] == text[:160]:
             return
         self._radio_lines.append(text[:160])
-        self._radio_lines = self._radio_lines[-8:]
+        self._radio_lines = self._radio_lines[-12:]
         try:
             self.radio_log.configure(state="normal")
             self.radio_log.delete("1.0", "end")
-            self.radio_log.insert("1.0", "Radio log:\n" + "\n".join(self._radio_lines))
+            self.radio_log.insert("1.0", "\n".join(self._radio_lines))
+            self.radio_log.see("end")
             self.radio_log.configure(state="disabled")
         except Exception:
             pass
+        # Mirror important Tracker lines into the status bar so the log is not
+        # the only place to notice a phone transmission.
+        if text.startswith(("SCAN", "AIR", "RX", "HEARD", "IRQ", "FW", "TUNE", "RADIO")):
+            self.status.configure(text=f"Tracker: {text[:110]}", fg=ACCENT if text.startswith(("RX", "AIR", "HEARD")) else MUTED)
 
     def set_status(self, text: str) -> None:
         good = text.startswith("Tracker connected") or text.startswith("Radio is listening")
