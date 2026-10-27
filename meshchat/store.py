@@ -216,6 +216,13 @@ class Store:
         )
         self.db.commit()
 
+    def mark_handed_off(self, row_id: int) -> None:
+        self.db.execute(
+            "UPDATE messages SET status = 'sent' WHERE id = ? AND status = 'sending'",
+            (row_id,),
+        )
+        self.db.commit()
+
     def mark_delivered(self, peer: int) -> None:
         row = self.db.execute(
             "SELECT id FROM messages WHERE peer = ? AND status = 'sent' "

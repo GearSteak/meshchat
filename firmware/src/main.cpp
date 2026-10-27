@@ -279,27 +279,51 @@ static bool listen() {
 }
 
 static bool transmit(const uint8_t *data, size_t len) {
-    if (!radioOk || radio == nullptr) {
+    if (!radioOk || radio == nullptr || len == 0 || len > 255) {
         return false;
     }
-    // Time-on-air before the modem is put into TX. Asking during the packet
-    // uses SPI and can make a send that already left the antenna look failed.
     uint32_t airUs = radio->getTimeOnAir(len);
     uint32_t airMs = airUs / 1000u;
-    if (airMs < 300 || airMs > 12000) {
-        airMs = 2500;
+    if (airMs < 200 || airMs > 8000) {
+        airMs = 1500;
     }
     paTransmit();
     delay(2);
-    int state = radio->startTransmit(data, len);
+    // startTransmit waits forever if BUSY stays high. The packet is already on
+    // the air by then, so Mesh Chat sits on "sending" and the radio never
+    // goes back to listening. Set the modem up and start TX without that wait.
+    int state = radio->standby();
     if (state != RADIOLIB_ERR_NONE) {
         listen();
         return false;
     }
-    delay(airMs + 200);
-    // The phone already has the packet by the time this wait ends. The done
-    // flag on this board stays clear, so that flag must not be reported as
-    // "not sent".
+    state = radio->setPacketParams(
+        radio->preambleLengthLoRa,
+        radio->crcTypeLoRa,
+        (uint8_t)len,
+        radio->headerType,
+        radio->invertIQEnabled);
+    if (state != RADIOLIB_ERR_NONE) {
+        listen();
+        return false;
+    }
+    radio->setDioIrqParams(RADIOLIB_SX126X_IRQ_TX_DONE | RADIOLIB_SX126X_IRQ_TIMEOUT, RADIOLIB_SX126X_IRQ_TX_DONE);
+    radio->setBufferBaseAddress();
+    state = radio->writeBuffer(data, (uint8_t)len);
+    if (state != RADIOLIB_ERR_NONE) {
+        listen();
+        return false;
+    }
+    radio->clearIrqStatus();
+    paTransmit();
+    radio->setTx(0);
+    uint32_t started = millis();
+    while (millis() - started < airMs + 250) {
+        if (digitalRead(kDio1) == HIGH || (radio->getIrqFlags() & RADIOLIB_SX126X_IRQ_TX_DONE) != 0) {
+            break;
+        }
+        delay(10);
+    }
     radio->finishTransmit();
     listen();
     return true;
@@ -542,6 +566,7 @@ static void handleLine(char *text) {
         }
         bool ok = sendMessage((uint32_t)target, messageId, body);
         Serial.printf("TX %lu %lu %s\n", target, (unsigned long)messageId, ok ? "ok" : "fail");
+        Serial.flush();
         return;
     }
     Serial.println("ERR unknown");

@@ -45,6 +45,13 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(self.store.fail_sending(12), 0)
         self.assertEqual(self.store.messages(100002)[1].status, "sending")
 
+    def test_handed_off_message_is_sent(self) -> None:
+        row_id = self.store.add_message(100002, 100001, 100002, "hi", "sending")
+        self.store.mark_handed_off(row_id)
+        self.assertEqual(self.store.messages(100002)[0].status, "sent")
+        self.store.mark_tx(100002, 9, False)
+        self.assertEqual(self.store.messages(100002)[0].status, "sent")
+
     def test_unknown_sender_is_kept(self) -> None:
         self.store.ensure_contact(100003)
         self.assertEqual(self.store.contact_name(100003), "100003")
@@ -90,6 +97,13 @@ class StoreTests(unittest.TestCase):
         self.store.add_message(100002, 100001, 100002, "hi", "sending")
         self.store.fail_sending()
         self.store.mark_tx(100002, 50, True)
+        self.assertEqual(self.store.messages(100002)[0].status, "sent")
+
+    def test_handed_off_message_is_sent(self) -> None:
+        row_id = self.store.add_message(100002, 100001, 100002, "hi", "sending")
+        self.store.mark_handed_off(row_id)
+        self.assertEqual(self.store.messages(100002)[0].status, "sent")
+        self.store.mark_tx(100002, 9, False)
         self.assertEqual(self.store.messages(100002)[0].status, "sent")
 
 

@@ -560,7 +560,7 @@ class App:
         target = self.selected_phone()
         if target is None:
             return
-        self.store.add_message(target, me, target, text, "sending")
+        row_id = self.store.add_message(target, me, target, text, "sending")
         self.entry.delete(0, "end")
         self._entry_empty = False
         self.entry.configure(fg=INK)
@@ -568,6 +568,10 @@ class App:
         if not self.tracker.send(target, text):
             self.store.mark_tx(target, 0, False)
             self.set_status("The Tracker is not connected. The message stayed here as not sent.")
+        else:
+            # The other radio already has these. Waiting on the Tracker to
+            # agree left the bubble on "sending" forever.
+            self.store.mark_handed_off(row_id)
         self.show_thread()
 
     def poll(self) -> None:
