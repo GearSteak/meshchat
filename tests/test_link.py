@@ -71,11 +71,20 @@ class LineTests(unittest.TestCase):
                 self.baudrate = 0
                 self.timeout = None
                 self.write_timeout = None
+                self.dsrdtr = True
+                self.rtscts = True
+                self.xonxoff = True
 
             def open(self) -> None:
                 opened["dtr"] = self.dtr
                 opened["rts"] = self.rts
                 opened["write_timeout"] = self.write_timeout
+
+            def reset_input_buffer(self) -> None:
+                return None
+
+            def reset_output_buffer(self) -> None:
+                return None
 
         import meshchat.link as link
 

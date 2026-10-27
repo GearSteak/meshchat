@@ -24,13 +24,23 @@ def open_link(port: str) -> serial.Serial:
     link = serial.Serial()
     link.port = port
     link.baudrate = 115200
-    link.timeout = 0.2
+    link.timeout = 0.25
     link.write_timeout = 2
+    link.dsrdtr = False
+    link.rtscts = False
+    link.xonxoff = False
     link.dtr = False
     link.rts = False
     link.open()
     link.dtr = False
     link.rts = False
+    # ESP32 USB-CDC often queues nothing until the host drains once.
+    try:
+        link.reset_input_buffer()
+        link.reset_output_buffer()
+    except (serial.SerialException, OSError):
+        pass
+    time.sleep(0.2)
     return link
 
 
@@ -150,6 +160,9 @@ class Tracker:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self.port_name = ""
+        self.bytes_read = 0
+        self.last_rx_at = 0.0
+        self.connected = False
 
     def start(self) -> None:
         threading.Thread(target=self._run, name="tracker", daemon=True).start()
@@ -158,8 +171,12 @@ class Tracker:
         self._stop.set()
         with self._lock:
             if self._ser is not None:
-                self._ser.close()
+                try:
+                    self._ser.close()
+                except Exception:
+                    pass
                 self._ser = None
+        self.connected = False
 
     def set_phone(self, phone: int) -> None:
         self.wanted_phone = phone
@@ -171,6 +188,9 @@ class Tracker:
             return False
         return self.write(f"SEND {target} {body}")
 
+    def ping(self) -> bool:
+        return self.write("PING")
+
     def write(self, line: str) -> bool:
         data = (line.rstrip("\r\n") + "\n").encode("utf-8")
         with self._lock:
@@ -179,12 +199,17 @@ class Tracker:
             try:
                 self._ser.write(data)
                 self._ser.flush()
+                # Local echo so the UI radio log moves even when USB reads are dead.
+                self.events.put({"op": "log", "detail": f"> {line.rstrip()}", "raw": f"> {line.rstrip()}"})
                 return True
             except TimeoutError:
                 # A slow flush must not tear down the reader. Closing here made
                 # Mesh Chat look like it could send while going deaf on receive.
+                self.events.put(
+                    {"op": "log", "detail": "write timeout", "raw": "WARN USB write timeout"}
+                )
                 return False
-            except (serial.SerialException, OSError, TypeError, ValueError):
+            except (serial.SerialException, OSError, TypeError, ValueError) as exc:
                 # A Tracker reboot mid-write raises OSError on Linux, not only
                 # SerialException. That used to escape and kill the window.
                 try:
@@ -192,23 +217,43 @@ class Tracker:
                 except Exception:
                     pass
                 self._ser = None
+                self.connected = False
+                self.events.put(
+                    {"op": "log", "detail": str(exc), "raw": f"WARN USB write failed: {exc}"}
+                )
                 return False
+
+    def _emit_line(self, decoded: str) -> None:
+        try:
+            event = parse_line(decoded)
+        except (ValueError, UnicodeError, TypeError):
+            event = {"op": "log", "detail": decoded, "raw": decoded}
+        if event:
+            self.events.put(event)
 
     def _run(self) -> None:
         announced_down = False
         while not self._stop.is_set():
             name = tracker_port(self._explicit)
             if not name:
+                self.connected = False
                 if not announced_down:
-                    self.events.put({"op": "down", "detail": "Plug the Tracker V2 into USB"})
+                    self.events.put(
+                        {
+                            "op": "down",
+                            "detail": "Plug the Tracker V2 into USB",
+                            "raw": "DOWN no Tracker port",
+                        }
+                    )
                     announced_down = True
                 self._stop.wait(1.0)
                 continue
             try:
                 ser = open_link(name)
             except serial.SerialException as exc:
+                self.connected = False
                 if not announced_down:
-                    self.events.put({"op": "down", "detail": str(exc)})
+                    self.events.put({"op": "down", "detail": str(exc), "raw": f"DOWN {exc}"})
                     announced_down = True
                 self._stop.wait(1.5)
                 continue
@@ -216,41 +261,62 @@ class Tracker:
             with self._lock:
                 self._ser = ser
             self.port_name = name
-            self.events.put({"op": "up", "port": name})
+            self.connected = True
+            self.events.put({"op": "up", "port": name, "raw": f"OPEN {name}"})
             buf = b""
-            # Read loop owns the port; do not hold the write lock across
-            # ser.read() or a blocked flush can deadlock USB CDC on the Pi.
+            last_byte = time.time()
+            last_ping = 0.0
+            warned_silent = False
+            # Handshake after buffers settled. Replies prove USB reads work.
             self.write("PING")
             if self.wanted_phone:
                 self.write(f"ID {self.wanted_phone}")
             else:
                 self.write("ID?")
-            # Ask the Tracker to fake an RX over USB only. If Mesh Chat shows
-            # that bubble, the client receive path works and LoRa is the gap.
             self.write("ECHO meshchat-usb-ok")
+            last_ping = time.time()
             while not self._stop.is_set():
                 try:
-                    waiting = ser.in_waiting
-                    chunk = ser.read(waiting if waiting > 0 else 256)
+                    # Always block-read with timeout. Relying on in_waiting alone
+                    # missed CDC data on some Pi USB stacks.
+                    chunk = ser.read(1024)
                 except (serial.SerialException, OSError) as exc:
-                    self.events.put({"op": "down", "detail": str(exc)})
+                    self.connected = False
+                    self.events.put({"op": "down", "detail": str(exc), "raw": f"DOWN {exc}"})
                     break
-                if not chunk:
+                now = time.time()
+                if chunk:
+                    last_byte = now
+                    warned_silent = False
+                    self.bytes_read += len(chunk)
+                    self.last_rx_at = now
+                    buf += chunk
+                    while b"\n" in buf or b"\r" in buf:
+                        if b"\n" in buf:
+                            raw, buf = buf.split(b"\n", 1)
+                        else:
+                            raw, buf = buf.split(b"\r", 1)
+                        raw = raw.rstrip(b"\r")
+                        if not raw:
+                            continue
+                        self._emit_line(raw.decode("utf-8", "replace"))
                     continue
-                buf += chunk
-                while b"\n" in buf or b"\r" in buf:
-                    if b"\n" in buf:
-                        raw, buf = buf.split(b"\n", 1)
-                    else:
-                        raw, buf = buf.split(b"\r", 1)
-                    raw = raw.rstrip(b"\r")
-                    decoded = raw.decode("utf-8", "replace")
-                    try:
-                        event = parse_line(decoded)
-                    except (ValueError, UnicodeError, TypeError):
-                        event = {"op": "log", "detail": decoded, "raw": decoded}
-                    if event:
-                        self.events.put(event)
+                # No bytes this slice — keep the Tracker awake and surface silence.
+                if now - last_ping >= 4.0:
+                    last_ping = now
+                    self.write("PING")
+                if now - last_byte >= 6.0 and not warned_silent:
+                    warned_silent = True
+                    self.events.put(
+                        {
+                            "op": "log",
+                            "detail": "silent",
+                            "raw": (
+                                f"WARN Tracker on {name} accepts writes but sent "
+                                f"0 USB bytes back — radio log cannot see RX/SCAN"
+                            ),
+                        }
+                    )
             with self._lock:
                 try:
                     ser.close()
@@ -258,4 +324,5 @@ class Tracker:
                     pass
                 if self._ser is ser:
                     self._ser = None
+            self.connected = False
             time.sleep(0.4)

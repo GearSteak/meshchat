@@ -696,7 +696,7 @@ class App:
         raw = str(event.get("raw") or "")
         # Every Tracker line belongs in the radio log. If this stays quiet while
         # a phone is transmitting, the USB reader never saw the line.
-        if raw and op not in {"gps", "nmea"}:
+        if raw and op not in {"nmea"}:
             self._serial_lines += 1
             self.note_radio(raw)
             self._append_radio_file(raw)
@@ -707,7 +707,7 @@ class App:
             if self.store.fail_sending():
                 self.show_thread()
         elif op == "pong":
-            self.set_status(f"Tracker connected on {self.tracker.port_name}")
+            self.set_status(f"Tracker USB read ok on {self.tracker.port_name}")
         elif op == "fw":
             self.tracker.firmware = str(event.get("version") or "")
             if self.status.cget("text").startswith("Radio is listening"):
@@ -1018,7 +1018,18 @@ class App:
         bar.pack(fill="x", padx=8, pady=(0, 8))
         tk.Button(
             bar,
-            text="Refresh from file",
+            text="Ping Tracker",
+            command=self._ping_tracker_for_log,
+            bg=MINE,
+            fg=MINE_INK,
+            relief="flat",
+            padx=10,
+            pady=6,
+            font=ui_font(10, True),
+        ).pack(side="left")
+        tk.Button(
+            bar,
+            text="Refresh",
             command=self._fill_radio_window,
             bg=FIELD,
             fg=MINE,
@@ -1026,7 +1037,7 @@ class App:
             padx=10,
             pady=6,
             font=ui_font(10, True),
-        ).pack(side="left")
+        ).pack(side="left", padx=(8, 0))
         tk.Button(
             bar,
             text="Close",
@@ -1045,6 +1056,17 @@ class App:
             win.destroy()
 
         win.protocol("WM_DELETE_WINDOW", _close)
+        self._ping_tracker_for_log()
+
+    def _ping_tracker_for_log(self) -> None:
+        port = self.tracker.port_name or "(no port)"
+        fw = self.tracker.firmware or "?"
+        linked = "yes" if self.tracker.connected else "no"
+        self.note_radio(
+            f"STATUS port={port} fw={fw} linked={linked} usb_bytes={self.tracker.bytes_read}"
+        )
+        if not self.tracker.ping():
+            self.note_radio("WARN Ping write failed — Tracker not open for USB")
         self._fill_radio_window()
 
     def _fill_radio_window(self) -> None:
@@ -1052,10 +1074,17 @@ class App:
         if widget is None:
             return
         path = os.path.join(data_dir(), "radio.log")
-        chunks: list[str] = []
+        chunks: list[str] = [
+            f"port={self.tracker.port_name or 'none'}  fw={self.tracker.firmware or '?'}  "
+            f"linked={'yes' if self.tracker.connected else 'no'}  "
+            f"usb_bytes={self.tracker.bytes_read}  lines={self._serial_lines}",
+            f"file={path}",
+            "— live —",
+        ]
         if self._radio_lines:
-            chunks.append("— live —")
             chunks.extend(self._radio_lines)
+        else:
+            chunks.append("(no lines yet — press Ping Tracker)")
         try:
             with open(path, encoding="utf-8", errors="replace") as handle:
                 file_lines = [ln.rstrip("\n") for ln in handle.readlines()[-80:]]
@@ -1063,9 +1092,8 @@ class App:
                 chunks.append("— radio.log —")
                 chunks.extend(file_lines)
         except OSError:
-            if not chunks:
-                chunks.append("(no Tracker lines yet — is the Tracker plugged in?)")
-        body = "\n".join(chunks) if chunks else "(empty)"
+            chunks.append("(radio.log not created yet)")
+        body = "\n".join(chunks)
         try:
             widget.configure(state="normal")
             widget.delete("1.0", "end")
