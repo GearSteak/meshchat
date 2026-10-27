@@ -22,11 +22,13 @@ static const int kBusy = 13;
 static const int kSck = 9;
 static const int kMiso = 11;
 static const int kMosi = 10;
-// Heltec Wireless Tracker V2 uses a KCT8103L FEM (not GC1109 on GPIO46).
-// CPS (TX/RX path) is driven by SX1262 DIO2. We only drive power/CSD/CTX.
+// Meshtastic 2.7.12 for this board still wires GC1109 on GPIO46. Newer trees
+// use KCT8103L on GPIO5. Drive both so RX works on either FEM: leaving
+// GC1109 TX_EN floating keeps the amp in TX and the radio goes deaf.
 static const int kPaPower = 7; // VFEM_Ctrl
-static const int kPaCsd = 4;   // chip enable, HIGH = on
-static const int kPaCtx = 5;   // LOW = RX LNA, HIGH = TX / RX-bypass
+static const int kPaEn = 4;    // GC1109 PA_EN / KCT8103L CSD, HIGH = on
+static const int kPaTx = 46;   // GC1109 TX_EN: HIGH=TX, LOW=RX
+static const int kPaCtx = 5;   // KCT8103L CTX: HIGH=TX/bypass, LOW=RX LNA
 static const int kLed = 18;
 static const int kVext = 3;
 static const int kGpsRx = 33;
@@ -216,15 +218,16 @@ static void startGps() {
 }
 
 static void paReceive() {
-    // Match Meshtastic LoRaFEMInterface::setRxModeEnable for KCT8103L.
     digitalWrite(kPaPower, HIGH);
-    digitalWrite(kPaCsd, HIGH);
-    digitalWrite(kPaCtx, LOW); // LNA on — driving GPIO46 as TX_EN killed RX.
+    digitalWrite(kPaEn, HIGH);
+    digitalWrite(kPaTx, LOW);  // GC1109 RX (Meshtastic 2.7.12 tracker-v2)
+    digitalWrite(kPaCtx, LOW); // KCT8103L RX LNA (newer Meshtastic)
 }
 
 static void paTransmit() {
     digitalWrite(kPaPower, HIGH);
-    digitalWrite(kPaCsd, HIGH);
+    digitalWrite(kPaEn, HIGH);
+    digitalWrite(kPaTx, HIGH);
     digitalWrite(kPaCtx, HIGH);
 }
 
@@ -282,11 +285,21 @@ static bool beginRadio() {
     // skipped — same post-steps Meshtastic runs on this SX1262.
     radio->fixPaClamping();
     radio->setCurrentLimit(140);
+    // DIO2 → FEM CPS on this board (same as Meshtastic tracker-v2).
+    radio->setRfSwitchPins(RADIOLIB_NC, RADIOLIB_NC);
     radio->setDio2AsRfSwitch(true);
     radio->setOutputPower(kPower);
     radio->setRxBoostedGainMode(true);
-    radio->setCRC(2);
+    radio->setCRC(1);
     applyRxPatch();
+    // Keep the phone's failed begin() frequency register untouched so we stay
+    // on the same channel the T9 radios actually use. Report what the chip has.
+    uint8_t frf[3] = {0, 0, 0};
+    if (radio->readRegister(0x086B, frf, 3) == RADIOLIB_ERR_NONE) {
+        uint32_t raw = ((uint32_t)frf[0] << 16) | ((uint32_t)frf[1] << 8) | frf[2];
+        freqMhz = (raw * 32.0f) / 33554432.0f;
+        Serial.printf("TUNE %.3f raw=%lu\n", freqMhz, (unsigned long)raw);
+    }
     radio->setDio1Action(onDio1Rise);
     radioOk = listen();
     return radioOk;
@@ -525,9 +538,10 @@ static void pollRadio() {
                 lastScan = now;
                 lastSpi = now;
                 uint32_t irq = radio->getIrqFlags();
-                Serial.printf("SCAN irq=%lu dio=%d ctx=%d rssi=%.1f\n",
+                Serial.printf("SCAN irq=%lu dio=%d txen=%d ctx=%d rssi=%.1f\n",
                               (unsigned long)irq,
                               digitalRead(kDio1),
+                              digitalRead(kPaTx),
                               digitalRead(kPaCtx),
                               radio->getRSSI(false));
             }
@@ -548,9 +562,10 @@ static void pollRadio() {
 
     if (now - lastScan > 5000) {
         lastScan = now;
-        Serial.printf("SCAN irq=%lu dio=%d ctx=%d rssi=%.1f\n",
+        Serial.printf("SCAN irq=%lu dio=%d txen=%d ctx=%d rssi=%.1f\n",
                       (unsigned long)irq,
                       digitalRead(kDio1),
+                      digitalRead(kPaTx),
                       digitalRead(kPaCtx),
                       radio->getRSSI(false));
     }
@@ -604,9 +619,10 @@ static void handleLine(char *text) {
         reportFirmware();
         replyId();
         if (radio != nullptr) {
-            Serial.printf("IRQ %lu DIO %d CTX %d\n",
+            Serial.printf("IRQ %lu DIO %d TXEN %d CTX %d\n",
                           (unsigned long)radio->getIrqFlags(),
                           digitalRead(kDio1),
+                          digitalRead(kPaTx),
                           digitalRead(kPaCtx));
         }
         reportGps();
@@ -713,7 +729,8 @@ void setup() {
     pinMode(kLed, OUTPUT);
     digitalWrite(kLed, LOW);
     pinMode(kPaPower, OUTPUT);
-    pinMode(kPaCsd, OUTPUT);
+    pinMode(kPaEn, OUTPUT);
+    pinMode(kPaTx, OUTPUT);
     pinMode(kPaCtx, OUTPUT);
     paReceive();
     pinMode(kDio1, INPUT);
