@@ -98,6 +98,8 @@ class App:
         self.root.report_callback_exception = self._tk_exception
         self.refresh_contacts(BROADCAST)
         self.show_thread()
+        # Prove the chat UI can show receive even before USB/radio events.
+        self.root.after(200, self._probe_ui_receive)
         self.tracker.start()
         self._poll_job = self.root.after(100, self.poll)
 
@@ -723,14 +725,12 @@ class App:
         if self._ui_rx_probed:
             return
         self._ui_rx_probed = True
-        self.on_rx(
-            {
-                "sender": 1,
-                "target": BROADCAST,
-                "id": 1,
-                "text": "meshchat-ui-ok",
-            }
-        )
+        self.store.ensure_contact(1)
+        self.store.add_message(BROADCAST, 1, BROADCAST, "meshchat-ui-ok", "received", 1)
+        if self.current == BROADCAST or self.current is None:
+            self.refresh_contacts(BROADCAST)
+            self.show_thread()
+        self.set_status("Receive UI ok — open Everyone for meshchat-ui-ok")
 
     def _force_rx_from_raw(self, detail: str) -> None:
         parts = detail.split(" ")

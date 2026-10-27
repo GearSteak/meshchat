@@ -48,6 +48,8 @@ pkill -f 'python(3)? -m meshchat' 2>/dev/null || true
 sleep 0.3
 
 set +e
+# Force this checkout's package so an older pip copy cannot hide receive fixes.
+export PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}"
 .venv/bin/python -m meshchat "$@" >"$LOG" 2>&1
 status=$?
 set -e
