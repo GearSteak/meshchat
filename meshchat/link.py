@@ -43,6 +43,19 @@ def tracker_port(explicit: str | None = None) -> str | None:
     return None
 
 
+def _uint32_field(raw: str) -> int | None:
+    """Accept decimal radio ids, including broadcast 4294967295."""
+    if not raw or not raw.isascii() or not raw.isdigit():
+        return None
+    try:
+        value = int(raw, 10)
+    except ValueError:
+        return None
+    if value > 0xFFFFFFFF:
+        return None
+    return value
+
+
 def parse_line(line: str) -> dict | None:
     text = line.strip()
     if not text:
@@ -53,27 +66,39 @@ def parse_line(line: str) -> dict | None:
         return {"op": "pong"}
     if op == "FW" and len(parts) >= 2:
         return {"op": "fw", "version": parts[1]}
-    if op == "ID" and len(parts) >= 2 and parts[1].isdigit():
-        return {"op": "id", "phone": int(parts[1])}
+    if op == "ID" and len(parts) >= 2:
+        phone = _uint32_field(parts[1])
+        if phone is not None:
+            return {"op": "id", "phone": phone}
     if op == "RADIO" and len(parts) >= 2:
         return {"op": "radio", "ok": parts[1] == "ok", "detail": " ".join(parts[1:])}
-    if op == "ACK" and len(parts) >= 2 and parts[1].isdigit():
-        return {"op": "ack", "phone": int(parts[1])}
-    if op == "TX" and len(parts) >= 4 and parts[1].isdigit() and parts[2].isdigit():
-        return {
-            "op": "tx",
-            "phone": int(parts[1]),
-            "id": int(parts[2]),
-            "ok": parts[3] == "ok",
-        }
-    if op == "RX" and len(parts) >= 5 and all(parts[i].isdigit() for i in (1, 2, 3)):
-        return {
-            "op": "rx",
-            "sender": int(parts[1]),
-            "target": int(parts[2]),
-            "id": int(parts[3]),
-            "text": " ".join(parts[4:]),
-        }
+    if op == "ACK" and len(parts) >= 2:
+        phone = _uint32_field(parts[1])
+        if phone is not None:
+            return {"op": "ack", "phone": phone}
+    if op == "TX" and len(parts) >= 4:
+        phone = _uint32_field(parts[1])
+        msg_id = _uint32_field(parts[2])
+        if phone is not None and msg_id is not None:
+            return {
+                "op": "tx",
+                "phone": phone,
+                "id": msg_id,
+                "ok": parts[3] == "ok",
+            }
+    if op == "RX" and len(parts) >= 4:
+        sender = _uint32_field(parts[1])
+        target = _uint32_field(parts[2])
+        msg_id = _uint32_field(parts[3])
+        if sender is not None and target is not None and msg_id is not None:
+            return {
+                "op": "rx",
+                "sender": sender,
+                "target": target,
+                "id": msg_id,
+                "text": " ".join(parts[4:]),
+            }
+        return {"op": "log", "detail": text}
     if op == "HEARD":
         return {"op": "heard", "detail": " ".join(parts[1:]) or "packet"}
     if op == "IRQ":

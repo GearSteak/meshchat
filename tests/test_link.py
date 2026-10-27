@@ -11,6 +11,15 @@ class LineTests(unittest.TestCase):
         self.assertEqual(event["target"], 100002)
         self.assertEqual(event["id"], 99)
         self.assertEqual(event["text"], "hello there")
+        broadcast = parse_line("RX 166800 4294967295 3 hi everyone")
+        self.assertEqual(broadcast["op"], "rx")
+        self.assertEqual(broadcast["target"], 0xFFFFFFFF)
+        self.assertEqual(broadcast["text"], "hi everyone")
+        empty = parse_line("RX 166800 100001 4")
+        self.assertEqual(empty["op"], "rx")
+        self.assertEqual(empty["text"], "")
+        broken = parse_line("RX not-a-number 1 2 x")
+        self.assertEqual(broken["op"], "log")
 
     def test_send_result_and_ack(self) -> None:
         sent = parse_line("TX 100002 44 ok")

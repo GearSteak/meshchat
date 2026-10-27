@@ -78,10 +78,18 @@ class StoreTests(unittest.TestCase):
             app.close()
 
     def test_incoming_is_shown_when_the_number_matches_the_other_radio(self) -> None:
+        # Even when My number was set to the phone's id, still show the packet.
         self.assertTrue(show_incoming(166800, 166800, 166800))
         self.assertTrue(show_incoming(166800, 0xFFFFFFFF, 100001))
         self.assertTrue(show_incoming(166800, 100001, 100001))
-        self.assertFalse(show_incoming(100001, 166800, 100001))
+        self.assertTrue(show_incoming(100001, 166800, 100001))
+
+    def test_incoming_rx_is_stored_even_if_sender_matches_my_number(self) -> None:
+        self.store.set_phone(166800)
+        self.store.add_message(166800, 166800, 999999, "from phone", "received", 7)
+        rows = self.store.messages(166800)
+        self.assertEqual(rows[0].body, "from phone")
+        self.assertEqual(rows[0].status, "received")
 
     def test_phone_parser(self) -> None:
         self.assertEqual(parse_phone("0x00028B90"), 166800)

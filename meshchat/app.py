@@ -46,9 +46,8 @@ def ui_font(size: int, bold: bool = False) -> tuple:
 
 
 def show_incoming(sender: int, target: int, me: int | None) -> bool:
-    """Hide only our own outgoing packet. A matching number can still be the other radio."""
-    if me is not None and sender == me and target not in (me, BROADCAST):
-        return False
+    """Keep every radio packet. Hiding by number made phone traffic disappear when
+    My number was set to the other radio's id."""
     return True
 
 
@@ -444,7 +443,8 @@ class App:
         current = self.store.phone()
         raw = simpledialog.askstring(
             "My number",
-            "Hex id for this Pi. When the phone says enter hex, type this id.",
+            "Hex id for THIS Pi only — not the phone's id.\n"
+            "Type the phone's id into New chat, and type this Pi id into the phone.",
             initialvalue="" if current is None else format_phone(current),
             parent=self.root,
         )
@@ -659,6 +659,10 @@ class App:
         elif op == "irq":
             # From PING. Useful when the Tracker is connected but silent.
             self.set_status(f"Radio status {event.get('detail')}")
+        elif op == "log":
+            detail = str(event.get("detail") or "")
+            if detail.startswith("RX") or detail.startswith("HEARD"):
+                self.set_status(f"Radio: {detail[:100]}")
         elif op == "tx":
             self.store.mark_tx(int(event["phone"]), int(event["id"]), bool(event.get("ok")))
             if self.current == int(event["phone"]):
@@ -685,14 +689,18 @@ class App:
     def on_rx(self, event: dict) -> None:
         sender = int(event["sender"])
         target = int(event["target"])
-        if not show_incoming(sender, target, self.store.phone()):
-            return
+        text = str(event.get("text") or "")
         peer = BROADCAST if target == BROADCAST else sender
         self.store.ensure_contact(sender)
-        self.store.add_message(peer, sender, target, event["text"], "received", int(event["id"]))
+        if peer != BROADCAST:
+            self.store.ensure_contact(peer)
+        self.store.add_message(peer, sender, target, text, "received", int(event["id"]))
+        # Always jump to the thread that owns this packet so a direct message is
+        # not sitting unread while Everyone is still on screen.
         self.refresh_contacts(peer)
         self.show_thread()
-        self.set_status(f"Message from {format_phone(sender)}")
+        where = "Everyone" if peer == BROADCAST else format_phone(sender)
+        self.set_status(f"Message from {format_phone(sender)} → {where}")
 
     def on_gps(self, event: dict) -> None:
         fix = int(event.get("fix") or 0)
